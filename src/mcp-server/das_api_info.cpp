@@ -1,4 +1,5 @@
 #include "das_api_info.hpp"
+#include "mcp_helpers.hpp"
 
 #include "wsl/das/das_api_catalog.gen.hpp"
 
@@ -9,13 +10,15 @@
 namespace wsl::mcp_server
 {
 
-mcp::json
-handle_describe_das_api (const mcp::json &params)
+agentsdk::result<mcp::tool_result, mcp::mcp_error>
+handle_describe_das_api (const std::string &args_json)
 {
   const auto &catalog = das_api_catalog ();
 
-  if (!params.contains ("name")
-      || params["name"].get<std::string> ().empty ()) {
+  std::string name;
+  get_optional_string_arg (args_json, "name", name);
+
+  if (name.empty ()) {
     // Grouped listing.
     std::map<std::string, std::vector<const das_api_entry *>> by_cat;
     for (const auto &e : catalog)
@@ -48,10 +51,9 @@ handle_describe_das_api (const mcp::json &params)
       oss << "\n";
     }
     oss << "Use describe_das_api with a 'name' argument for a full entry.\n";
-    return { { { "type", "text" }, { "text", oss.str () } } };
+    return text_result (oss.str ());
   }
 
-  const std::string name = params["name"].get<std::string> ();
   const das_api_entry *found = nullptr;
   for (const auto &e : catalog) {
     if (e.name == name) {
@@ -60,8 +62,7 @@ handle_describe_das_api (const mcp::json &params)
     }
   }
   if (found == nullptr) {
-    throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                              "Unknown API function: " + name);
+    return param_error ("Unknown API function: " + name);
   }
 
   std::ostringstream oss;
@@ -83,7 +84,7 @@ handle_describe_das_api (const mcp::json &params)
          "hand-written "
          "stub is involved.\n";
 
-  return { { { "type", "text" }, { "text", oss.str () } } };
+  return text_result (oss.str ());
 }
 
 } // namespace wsl::mcp_server

@@ -1,4 +1,5 @@
 #include "cli_passthrough.hpp"
+#include "mcp_helpers.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -25,6 +26,7 @@
 #include <chrono>
 #include <filesystem>
 #include <sstream>
+#include <stdexcept>
 #include <vector>
 
 namespace wsl::mcp_server
@@ -91,6 +93,58 @@ quote_if_needed (const std::string &value)
   return value;
 }
 
+std::string
+format_cli_result (const cli_result &r, bool success)
+{
+  std::ostringstream oss;
+  oss << "command:";
+  for (const auto &a : r.command) {
+    oss << " " << a;
+  }
+  oss << "\nexit_code: " << r.exit_code << "\n";
+  oss << "timed_out: " << (r.timed_out ? "true" : "false") << "\n";
+  oss << "success: " << (success ? "true" : "false") << "\n";
+  oss << "--- stdout ---\n" << r.stdout_data << "\n";
+  oss << "--- stderr ---\n" << r.stderr_data << "\n";
+  return oss.str ();
+}
+
+// Shared gate for the structured mutation tools: require confirm=true.
+bool
+require_confirm (const std::string &args_json, mcp::mcp_error &error)
+{
+  if (!get_bool_arg (args_json, "confirm", false)) {
+    error = param_error (
+        "This tool mutates engine state: pass confirm=true to proceed");
+    return false;
+  }
+  return true;
+}
+
+// Resolve the common attach/project/timeout options used by every tool.
+bool
+resolve_attach (const std::string &args_json)
+{
+  if (!has_arg (args_json, "attach")) {
+    return true;
+  }
+  return get_bool_arg (args_json, "attach", true);
+}
+
+std::string
+resolve_project (const std::string &args_json)
+{
+  std::string project;
+  get_optional_string_arg (args_json, "project", project);
+  return project;
+}
+
+int
+resolve_timeout (const std::string &args_json)
+{
+  return get_int_arg (args_json, "timeout_seconds", 120);
+}
+
 } // namespace
 
 std::string
@@ -131,8 +185,9 @@ resolve_weasel_cli ()
 // platform on top of SDL processes: stdout/stderr travel on separate pipes
 // (preserved independently in the result, as with fork), stdin is inherited,
 // and the deadline loop mirrors the old poll() version.
-static mcp::json
-run_sdl (const std::vector<std::string> &full_argv, int timeout_seconds)
+static cli_result
+run_sdl (const std::vector<std::string> &full_argv, int timeout_seconds,
+         const std::string &cli_path)
 {
   // argv for SDL (null-terminated array of pointers into full_argv, which
   // outlives the call; SDL copies what it needs during creation).
@@ -155,9 +210,8 @@ run_sdl (const std::vector<std::string> &full_argv, int timeout_seconds)
   SDL_Process *proc = SDL_CreateProcessWithProperties (props);
   SDL_DestroyProperties (props);
   if (!proc) {
-    throw mcp::mcp_exception (mcp::error_code::internal_error,
-                              std::string ("SDL_CreateProcess failed: ")
-                                  + SDL_GetError ());
+    throw std::runtime_error (std::string ("SDL_CreateProcess failed: ")
+                              + SDL_GetError ());
   }
   SDL_PropertiesID pprops = SDL_GetProcessProperties (proc);
   SDL_IOStream *out = (SDL_IOStream *)SDL_GetPointerProperty (
@@ -166,8 +220,7 @@ run_sdl (const std::vector<std::string> &full_argv, int timeout_seconds)
       pprops, SDL_PROP_PROCESS_STDERR_POINTER, nullptr);
   if (!out || !err) {
     SDL_DestroyProcess (proc);
-    throw mcp::mcp_exception (mcp::error_code::internal_error,
-                              "SDL process missing stdio streams");
+    throw std::runtime_error ("SDL process missing stdio streams");
   }
 
   const auto deadline = std::chrono::steady_clock::now ()
@@ -219,15 +272,17 @@ run_sdl (const std::vector<std::string> &full_argv, int timeout_seconds)
   SDL_CloseIO (err);
   SDL_DestroyProcess (proc);
 
-  mcp::json result{
-    { "command", full_argv },   { "exit_code", exit_code },
-    { "stdout", stdout_data },  { "stderr", stderr_data },
-    { "timed_out", timed_out },
-  };
+  cli_result result;
+  result.command = full_argv;
+  result.exit_code = exit_code;
+  result.stdout_data = std::move (stdout_data);
+  result.stderr_data = std::move (stderr_data);
+  result.timed_out = timed_out;
+  result.cli_path = cli_path;
   return result;
 }
 
-mcp::json
+cli_result
 execute_cli_command (const std::string &command, bool attach,
                      const std::string &project, int timeout_seconds)
 {
@@ -235,15 +290,15 @@ execute_cli_command (const std::string &command, bool attach,
   if (!argv.empty () && argv[0] == "weasel-cli")
     argv.erase (argv.begin ());
   if (argv.empty ()) {
-    throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                              "Missing command to run");
+    throw std::invalid_argument ("Missing command to run");
   }
   if (timeout_seconds <= 0)
     timeout_seconds = 120;
   timeout_seconds = std::min (timeout_seconds, 600);
 
+  std::string cli_path = resolve_weasel_cli ();
   std::vector<std::string> full_argv;
-  full_argv.push_back (resolve_weasel_cli ());
+  full_argv.push_back (cli_path);
   if (attach)
     full_argv.push_back ("-a");
   if (!project.empty ()) {
@@ -253,210 +308,219 @@ execute_cli_command (const std::string &command, bool attach,
   for (const std::string &arg : argv)
     full_argv.push_back (arg);
 
-  return run_sdl (full_argv, timeout_seconds);
+  return run_sdl (full_argv, timeout_seconds, cli_path);
 }
 
-mcp::json
-handle_script_reload (const mcp::json & /*params*/)
+agentsdk::result<mcp::tool_result, mcp::mcp_error>
+handle_script_reload (const std::string & /*args_json*/)
 {
-  mcp::json result = execute_cli_command ("script reload", true, "", 300);
-
-  // Surface a compact success flag so agents do not have to parse text.
-  result["success"] = result["exit_code"].get<int> () == 0
-                      && !result["timed_out"].get<bool> ();
-  return result;
-}
-
-mcp::json
-handle_run_cli_command (const mcp::json &params)
-{
-  if (!params.contains ("command") || !params["command"].is_string ()) {
-    throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                              "Missing 'command' string parameter");
-  }
-  if (!params.contains ("confirm") || !params["confirm"].is_boolean ()
-      || !params["confirm"].get<bool> ()) {
-    throw mcp::mcp_exception (
-        mcp::error_code::invalid_params,
-        "This tool mutates engine state: pass confirm=true to proceed");
+  cli_result r;
+  try {
+    r = execute_cli_command ("script reload", true, "", 300);
+  } catch (const std::exception &e) {
+    mcp::tool_result tr
+        = text_result (std::string ("script reload failed: ") + e.what ());
+    tr.is_error = true;
+    return tr;
   }
 
-  const bool attach
-      = !params.contains ("attach") || !params["attach"].is_boolean ()
-            ? true
-            : params["attach"].get<bool> ();
-  const std::string project
-      = params.contains ("project") && params["project"].is_string ()
-            ? params["project"].get<std::string> ()
-            : std::string ();
-  int timeout = 120;
-  if (params.contains ("timeout_seconds")
-      && params["timeout_seconds"].is_number_integer ())
-    timeout = params["timeout_seconds"].get<int> ();
-
-  return execute_cli_command (params["command"].get<std::string> (), attach,
-                              project, timeout);
+  bool success = r.exit_code == 0 && !r.timed_out;
+  mcp::tool_result tr = text_result (format_cli_result (r, success));
+  tr.is_error = !success;
+  return tr;
 }
 
-namespace
+agentsdk::result<mcp::tool_result, mcp::mcp_error>
+handle_run_cli_command (const std::string &args_json)
 {
-
-// Shared gate for the structured mutation tools: require confirm=true.
-void
-require_confirm (const mcp::json &params)
-{
-  if (!params.contains ("confirm") || !params["confirm"].is_boolean ()
-      || !params["confirm"].get<bool> ()) {
-    throw mcp::mcp_exception (
-        mcp::error_code::invalid_params,
-        "This tool mutates engine state: pass confirm=true to proceed");
+  std::string command;
+  std::string error;
+  if (!get_string_arg (args_json, "command", command, error)) {
+    return param_error (error);
   }
-}
-
-// Resolve the common attach/project/timeout options used by every tool.
-bool
-resolve_attach (const mcp::json &params)
-{
-  return !params.contains ("attach") || !params["attach"].is_boolean ()
-             ? true
-             : params["attach"].get<bool> ();
-}
-
-std::string
-resolve_project (const mcp::json &params)
-{
-  return params.contains ("project") && params["project"].is_string ()
-             ? params["project"].get<std::string> ()
-             : std::string ();
-}
-
-int
-resolve_timeout (const mcp::json &params)
-{
-  int timeout = 120;
-  if (params.contains ("timeout_seconds")
-      && params["timeout_seconds"].is_number_integer ())
-    timeout = params["timeout_seconds"].get<int> ();
-  return timeout;
-}
-
-} // namespace
-
-mcp::json
-handle_scene_save (const mcp::json &params)
-{
-  require_confirm (params);
-  if (params.contains ("path") && !params["path"].is_string ()) {
-    throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                              "'path' must be a string");
+  mcp::mcp_error confirm_error{ 0, "", std::nullopt };
+  if (!require_confirm (args_json, confirm_error)) {
+    return confirm_error;
   }
-  if (params.contains ("as_default") && !params["as_default"].is_boolean ()) {
-    throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                              "'as_default' must be a boolean");
+
+  const bool attach = resolve_attach (args_json);
+  const std::string project = resolve_project (args_json);
+  int timeout = resolve_timeout (args_json);
+
+  cli_result r;
+  try {
+    r = execute_cli_command (command, attach, project, timeout);
+  } catch (const std::exception &e) {
+    mcp::tool_result tr
+        = text_result (std::string ("run_cli_command failed: ") + e.what ());
+    tr.is_error = true;
+    return tr;
+  }
+  bool success = r.exit_code == 0 && !r.timed_out;
+  mcp::tool_result tr = text_result (format_cli_result (r, success));
+  tr.is_error = !success;
+  return tr;
+}
+
+agentsdk::result<mcp::tool_result, mcp::mcp_error>
+handle_scene_save (const std::string &args_json)
+{
+  mcp::mcp_error confirm_error{ 0, "", std::nullopt };
+  if (!require_confirm (args_json, confirm_error)) {
+    return confirm_error;
+  }
+  if (has_arg (args_json, "path")) {
+    std::string path;
+    std::string error;
+    if (!get_string_arg (args_json, "path", path, error)) {
+      return param_error ("'path' must be a string");
+    }
+    if (path.empty ()) {
+      return param_error ("'path' must not be empty");
+    }
   }
 
   std::string command = "scene save";
-  if (params.contains ("path")) {
-    const std::string path = params["path"].get<std::string> ();
-    if (path.empty ())
-      throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                                "'path' must not be empty");
+  std::string path;
+  get_optional_string_arg (args_json, "path", path);
+  if (!path.empty ()) {
     command += " " + quote_if_needed (path);
   }
-  if (params.contains ("as_default") && params["as_default"].get<bool> ())
+  if (get_bool_arg (args_json, "as_default", false)) {
     command += " --as-default";
+  }
 
-  mcp::json result = execute_cli_command (command, resolve_attach (params),
-                                          resolve_project (params),
-                                          resolve_timeout (params));
-  result["success"] = result["exit_code"].get<int> () == 0
-                      && !result["timed_out"].get<bool> ();
-  return result;
+  cli_result r;
+  try {
+    r = execute_cli_command (command, resolve_attach (args_json),
+                             resolve_project (args_json),
+                             resolve_timeout (args_json));
+  } catch (const std::exception &e) {
+    mcp::tool_result tr
+        = text_result (std::string ("scene save failed: ") + e.what ());
+    tr.is_error = true;
+    return tr;
+  }
+  bool success = r.exit_code == 0 && !r.timed_out;
+  mcp::tool_result tr = text_result (format_cli_result (r, success));
+  tr.is_error = !success;
+  return tr;
 }
 
-mcp::json
-handle_entity_add (const mcp::json &params)
+agentsdk::result<mcp::tool_result, mcp::mcp_error>
+handle_entity_add (const std::string &args_json)
 {
-  require_confirm (params);
-  if (!params.contains ("name") || !params["name"].is_string ()) {
-    throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                              "Missing 'name' string parameter");
+  mcp::mcp_error confirm_error{ 0, "", std::nullopt };
+  if (!require_confirm (args_json, confirm_error)) {
+    return confirm_error;
   }
-  const std::string name = params["name"].get<std::string> ();
-  if (name.empty ())
-    throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                              "'name' must not be empty");
-  if (params.contains ("empty") && !params["empty"].is_boolean ()) {
-    throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                              "'empty' must be a boolean");
+  std::string name;
+  std::string error;
+  if (!get_string_arg (args_json, "name", name, error) || name.empty ()) {
+    return param_error ("Missing 'name' string parameter");
   }
 
   std::string command = "ent new";
-  if (params.contains ("empty") && params["empty"].get<bool> ())
+  if (get_bool_arg (args_json, "empty", false)) {
     command += " --empty";
+  }
   command += " " + quote_if_needed (name);
 
-  mcp::json result = execute_cli_command (command, resolve_attach (params),
-                                          resolve_project (params),
-                                          resolve_timeout (params));
-  result["success"] = result["exit_code"].get<int> () == 0
-                      && !result["timed_out"].get<bool> ();
-  return result;
+  cli_result r;
+  try {
+    r = execute_cli_command (command, resolve_attach (args_json),
+                             resolve_project (args_json),
+                             resolve_timeout (args_json));
+  } catch (const std::exception &e) {
+    mcp::tool_result tr
+        = text_result (std::string ("entity add failed: ") + e.what ());
+    tr.is_error = true;
+    return tr;
+  }
+  bool success = r.exit_code == 0 && !r.timed_out;
+  mcp::tool_result tr = text_result (format_cli_result (r, success));
+  tr.is_error = !success;
+  return tr;
 }
 
-mcp::json
-handle_entity_remove (const mcp::json &params)
+agentsdk::result<mcp::tool_result, mcp::mcp_error>
+handle_entity_remove (const std::string &args_json)
 {
-  require_confirm (params);
-  if (!params.contains ("id") || !params["id"].is_string ()) {
-    throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                              "Missing 'id' string parameter (entity id or "
-                              "name)");
+  mcp::mcp_error confirm_error{ 0, "", std::nullopt };
+  if (!require_confirm (args_json, confirm_error)) {
+    return confirm_error;
   }
-  const std::string id = params["id"].get<std::string> ();
-  if (id.empty ())
-    throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                              "'id' must not be empty");
+  std::string id;
+  std::string error;
+  if (!get_string_arg (args_json, "id", id, error) || id.empty ()) {
+    return param_error ("Missing 'id' string parameter (entity id or name)");
+  }
 
   const std::string command = "ent rm " + quote_if_needed (id);
 
-  mcp::json result = execute_cli_command (command, resolve_attach (params),
-                                          resolve_project (params),
-                                          resolve_timeout (params));
-  result["success"] = result["exit_code"].get<int> () == 0
-                      && !result["timed_out"].get<bool> ();
-  return result;
+  cli_result r;
+  try {
+    r = execute_cli_command (command, resolve_attach (args_json),
+                             resolve_project (args_json),
+                             resolve_timeout (args_json));
+  } catch (const std::exception &e) {
+    mcp::tool_result tr
+        = text_result (std::string ("entity remove failed: ") + e.what ());
+    tr.is_error = true;
+    return tr;
+  }
+  bool success = r.exit_code == 0 && !r.timed_out;
+  mcp::tool_result tr = text_result (format_cli_result (r, success));
+  tr.is_error = !success;
+  return tr;
 }
 
-mcp::json
-handle_component_set (const mcp::json &params)
+agentsdk::result<mcp::tool_result, mcp::mcp_error>
+handle_component_set (const std::string &args_json)
 {
-  require_confirm (params);
+  mcp::mcp_error confirm_error{ 0, "", std::nullopt };
+  if (!require_confirm (args_json, confirm_error)) {
+    return confirm_error;
+  }
   for (const char *field : { "entity", "component", "property", "value" }) {
-    if (!params.contains (field) || !params[field].is_string ()) {
-      throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                                std::string ("Missing '") + field
-                                    + "' string parameter");
-    }
-    if (params[field].get<std::string> ().empty ()) {
-      throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                                std::string ("'") + field
-                                    + "' must not be empty");
+    std::string value;
+    std::string error;
+    if (!get_string_arg (args_json, field, value, error) || value.empty ()) {
+      return param_error (std::string ("Missing '") + field
+                          + "' string parameter");
     }
   }
 
-  const std::string command
-      = "comp set " + quote_if_needed (params["entity"].get<std::string> ())
-        + " " + quote_if_needed (params["component"].get<std::string> ()) + " "
-        + quote_if_needed (params["property"].get<std::string> ()) + " "
-        + quote_if_needed (params["value"].get<std::string> ());
+  std::string entity;
+  std::string component;
+  std::string property;
+  std::string value;
+  std::string dummy;
+  get_string_arg (args_json, "entity", entity, dummy);
+  get_string_arg (args_json, "component", component, dummy);
+  get_string_arg (args_json, "property", property, dummy);
+  get_string_arg (args_json, "value", value, dummy);
 
-  mcp::json result = execute_cli_command (command, resolve_attach (params),
-                                          resolve_project (params),
-                                          resolve_timeout (params));
-  result["success"] = result["exit_code"].get<int> () == 0
-                      && !result["timed_out"].get<bool> ();
-  return result;
+  const std::string command = "comp set " + quote_if_needed (entity) + " "
+                              + quote_if_needed (component) + " "
+                              + quote_if_needed (property) + " "
+                              + quote_if_needed (value);
+
+  cli_result r;
+  try {
+    r = execute_cli_command (command, resolve_attach (args_json),
+                             resolve_project (args_json),
+                             resolve_timeout (args_json));
+  } catch (const std::exception &e) {
+    mcp::tool_result tr
+        = text_result (std::string ("component set failed: ") + e.what ());
+    tr.is_error = true;
+    return tr;
+  }
+  bool success = r.exit_code == 0 && !r.timed_out;
+  mcp::tool_result tr = text_result (format_cli_result (r, success));
+  tr.is_error = !success;
+  return tr;
 }
 
 } // namespace wsl::mcp_server

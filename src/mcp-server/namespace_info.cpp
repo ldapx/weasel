@@ -1,4 +1,5 @@
 #include "namespace_info.hpp"
+#include "mcp_helpers.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -725,10 +726,10 @@ find_namespace (const std::string &name)
 // Handlers
 // ---------------------------------------------------------------------------
 
-mcp::json
-handle_list_namespaces (const mcp::json &params)
+agentsdk::result<mcp::tool_result, mcp::mcp_error>
+handle_list_namespaces (const std::string &args_json)
 {
-  (void)params;
+  (void)args_json;
   std::ostringstream oss;
   oss << "Weasel Engine Namespaces\n\n";
   oss << "The engine core library (wsl) is organized into the following "
@@ -750,18 +751,18 @@ handle_list_namespaces (const mcp::json &params)
   oss << "  6. describe_namespace('math') — vector/quaternion types\n";
   oss << "  7. describe_namespace('reg')  — registration infrastructure\n";
 
-  return mcp::json{ { { "type", "text" }, { "text", oss.str () } } };
+  return text_result (oss.str ());
 }
 
-mcp::json
-handle_describe_namespace (const mcp::json &params)
+agentsdk::result<mcp::tool_result, mcp::mcp_error>
+handle_describe_namespace (const std::string &args_json)
 {
-  if (!params.contains ("name")) {
-    throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                              "Missing required parameter: name");
+  std::string name;
+  std::string error;
+  if (!get_string_arg (args_json, "name", name, error)) {
+    return param_error (error);
   }
 
-  const std::string name = params["name"].get<std::string> ();
   const auto *doc = find_namespace (name);
 
   if (!doc) {
@@ -771,12 +772,10 @@ handle_describe_namespace (const mcp::json &params)
         valid += ", ";
       valid += k;
     }
-    throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                              "Unknown namespace: " + name
-                                  + ". Valid: " + valid);
+    return param_error ("Unknown namespace: " + name + ". Valid: " + valid);
   }
 
-  return mcp::json{ { { "type", "text" }, { "text", doc->detail } } };
+  return text_result (doc->detail);
 }
 
 } // namespace wsl::mcp_server

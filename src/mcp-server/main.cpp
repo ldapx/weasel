@@ -12,12 +12,14 @@ main (int argc, char **argv)
 {
   CLI::App app{ "Weasel Engine MCP Server" };
 
+  // Historical HTTP options are kept for compatibility but ignored: the
+  // server now speaks stdio only via agentsdk::mcp::mcp_server.
   std::string host = "localhost";
   int port = 8080;
-  bool stdio_mode = false;
-  app.add_option ("--host", host, "Host to bind to");
-  app.add_option ("--port", port, "Port to listen on");
-  app.add_flag ("--stdio", stdio_mode, "Use stdio transport instead of HTTP");
+  bool stdio_mode = true;
+  app.add_option ("--host", host, "Deprecated: ignored (stdio only)");
+  app.add_option ("--port", port, "Deprecated: ignored (stdio only)");
+  app.add_flag ("--stdio", stdio_mode, "Use stdio transport (default, only)");
 
   try {
     app.parse (argc, argv);
@@ -32,8 +34,7 @@ main (int argc, char **argv)
   wsl::log::init ();
   spdlog::set_level (spdlog::level::off);
 
-  wsl::mcp_server::mcp_server_app server (host, port);
-  server.set_stdio_mode (stdio_mode);
+  wsl::mcp_server::mcp_server_app server;
   server.run ();
 
   return 0;

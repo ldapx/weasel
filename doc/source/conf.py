@@ -37,8 +37,6 @@ hawkmoth_clang = [
     f"-I{os.path.join(_project_root, 'build', '_deps', 'entt-src', 'single_include')}",
     f"-I{os.path.join(_project_root, 'build', '_deps', 'daslang-src', 'include')}",
     f"-I{os.path.join(_project_root, 'build', '_deps', 'daslang-build', 'include')}",
-    f"-I{os.path.join(_project_root, 'build', '_deps', 'cpp-mcp-src', 'include')}",
-    f"-I{os.path.join(_project_root, 'build', '_deps', 'cpp-mcp-src', 'common')}",
     f"-I{os.path.join(_project_root, 'build', '_deps', 'ai-sdk-cpp-src', 'third_party', 'nlohmann_json_patched', 'include')}",
     f"-I{os.path.join(_project_root, 'build', '_deps', 'ai-sdk-cpp-src', 'third_party', 'nlohmann_json_patched', 'include', 'nlohmann')}",
     "-std=c++20",
@@ -47,9 +45,6 @@ hawkmoth_clang = [
     "-D__cpp_exceptions=1",
     # RmlUi's SDL platform header requires the linked SDL major version.
     "-DRMLUI_SDL_VERSION_MAJOR=3",
-    # cpp-mcp SDK compile-time config defaults (from cpp-mcp CMakeLists).
-    "-DMCP_MAX_SESSIONS=10",
-    "-DMCP_SESSION_TIMEOUT=30",
     # Note: we intentionally do NOT add GCC's internal include path
     # (/usr/lib/gcc/.../include). It pulls in GCC's ia32intrin.h/xmmintrin.h
     # which redefine clang builtins and fail to parse. clang provides its own

@@ -1,4 +1,5 @@
 #include "component_info.hpp"
+#include "mcp_helpers.hpp"
 
 #include "wsl/comp/components.hpp"
 #include "wsl/comp/component_meta.hpp"
@@ -272,10 +273,10 @@ find_component (const std::string &name)
 
 // --- handlers --------------------------------------------------------------
 
-mcp::json
-handle_list_components (const mcp::json &params)
+agentsdk::result<mcp::tool_result, mcp::mcp_error>
+handle_list_components (const std::string &args_json)
 {
-  (void)params;
+  (void)args_json;
   const auto &registry = ensure_registry ();
   auto components = registry.get_world_components ();
 
@@ -297,23 +298,22 @@ handle_list_components (const mcp::json &params)
     oss << "\n";
   }
 
-  return mcp::json{ { { "type", "text" }, { "text", oss.str () } } };
+  return text_result (oss.str ());
 }
 
-mcp::json
-handle_describe_component (const mcp::json &params)
+agentsdk::result<mcp::tool_result, mcp::mcp_error>
+handle_describe_component (const std::string &args_json)
 {
-  if (!params.contains ("name")) {
-    throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                              "Missing required parameter: name");
+  std::string name;
+  std::string error;
+  if (!get_string_arg (args_json, "name", name, error)) {
+    return param_error (error);
   }
 
-  const std::string name = params["name"].get<std::string> ();
   const auto *desc = find_component (name);
 
   if (!desc) {
-    throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                              "Unknown component: " + name);
+    return param_error ("Unknown component: " + name);
   }
 
   std::ostringstream oss;
@@ -363,7 +363,7 @@ handle_describe_component (const mcp::json &params)
     }
   }
 
-  return mcp::json{ { { "type", "text" }, { "text", oss.str () } } };
+  return text_result (oss.str ());
 }
 
 } // namespace wsl::mcp_server

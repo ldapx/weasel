@@ -2,10 +2,14 @@
 #include <doctest/doctest.h>
 
 #include "mcp-server/cli_reference.hpp"
+#include "mcp-server/component_info.hpp"
+#include "mcp-server/das_api_info.hpp"
 #include "mcp-server/mcp_server_handlers.hpp"
 #include "mcp-server/namespace_info.hpp"
 
-#include <mcp_message.h>
+#include "wsl/log/log.hpp"
+
+#include <agentsdk/mcp/mcp_tool_builder.hpp>
 
 #include <string>
 
@@ -13,17 +17,29 @@
 #include <filesystem>
 #include <regex>
 #include <set>
+#include <variant>
 
 using namespace wsl::mcp_server;
+namespace mcp = agentsdk::mcp;
 
-// Helper: extract text from the MCP content array
-static std::string
-get_text (const mcp::json &content)
+// Component handlers touch the engine registries, which log through
+// wsl::log::sys(). Mirror main.cpp: initialise logging before any test.
+struct log_init_fixture
 {
-  REQUIRE (content.is_array ());
-  REQUIRE (content.size () == 1);
-  REQUIRE (content[0].contains ("text"));
-  return content[0]["text"].get<std::string> ();
+  log_init_fixture () { wsl::log::init (); }
+};
+static log_init_fixture g_log_init;
+
+// Helper: extract text from a tool_result
+static std::string
+get_text (const agentsdk::result<mcp::tool_result, mcp::mcp_error> &r)
+{
+  REQUIRE (r.has_value ());
+  const auto &result = r.value ();
+  REQUIRE (result.content.size () == 1);
+  const auto *t = std::get_if<mcp::text_content> (&result.content[0]);
+  REQUIRE (t != nullptr);
+  return t->text;
 }
 
 // ============================================================================
@@ -95,8 +111,7 @@ TEST_CASE ("find_command finds cli flags")
 
 TEST_CASE ("handle_list_namespaces lists all 7 namespaces")
 {
-  mcp::json params = mcp::json::object ();
-  mcp::json result = handle_list_namespaces (params);
+  auto result = handle_list_namespaces ("{}");
   std::string text = get_text (result);
 
   CHECK (text.find ("comp") != std::string::npos);
@@ -110,8 +125,7 @@ TEST_CASE ("handle_list_namespaces lists all 7 namespaces")
 
 TEST_CASE ("handle_describe_namespace returns detail for known ns")
 {
-  mcp::json params = { { "name", "comp" } };
-  mcp::json result = handle_describe_namespace (params);
+  auto result = handle_describe_namespace (R"({"name":"comp"})");
   std::string text = get_text (result);
 
   CHECK (text.find ("wsl::comp") != std::string::npos);
@@ -119,29 +133,29 @@ TEST_CASE ("handle_describe_namespace returns detail for known ns")
   CHECK (text.find ("camera") != std::string::npos);
 }
 
-TEST_CASE ("handle_describe_namespace throws for unknown ns")
+TEST_CASE ("handle_describe_namespace errors for unknown ns")
 {
-  mcp::json params = { { "name", "foobar" } };
-  CHECK_THROWS_AS (handle_describe_namespace (params), mcp::mcp_exception);
+  auto result = handle_describe_namespace (R"({"name":"foobar"})");
+  CHECK (!result.has_value ());
+  CHECK (result.error ().code == mcp::INVALID_PARAMS);
 }
 
-TEST_CASE ("handle_describe_namespace throws when name missing")
+TEST_CASE ("handle_describe_namespace errors when name missing")
 {
-  mcp::json params = mcp::json::object ();
-  CHECK_THROWS_AS (handle_describe_namespace (params), mcp::mcp_exception);
+  auto result = handle_describe_namespace ("{}");
+  CHECK (!result.has_value ());
+  CHECK (result.error ().code == mcp::INVALID_PARAMS);
 }
 
 TEST_CASE ("handle_describe_namespace is case-insensitive")
 {
-  mcp::json params = { { "name", "COMP" } };
-  mcp::json result = handle_describe_namespace (params);
+  auto result = handle_describe_namespace (R"({"name":"COMP"})");
   CHECK (get_text (result).find ("wsl::comp") != std::string::npos);
 }
 
 TEST_CASE ("handle_describe_namespace for sys")
 {
-  mcp::json params = { { "name", "sys" } };
-  mcp::json result = handle_describe_namespace (params);
+  auto result = handle_describe_namespace (R"({"name":"sys"})");
   CHECK (get_text (result).find ("EcsSystem") != std::string::npos);
 }
 
@@ -151,8 +165,7 @@ TEST_CASE ("handle_describe_namespace for sys")
 
 TEST_CASE ("handle_list_commands returns categorized list")
 {
-  mcp::json params = mcp::json::object ();
-  mcp::json result = handle_list_commands (params);
+  auto result = handle_list_commands ("{}");
   std::string text = get_text (result);
 
   CHECK (text.find ("CLI Subcommands") != std::string::npos);
@@ -164,8 +177,7 @@ TEST_CASE ("handle_list_commands returns categorized list")
 
 TEST_CASE ("handle_describe_command returns command details")
 {
-  mcp::json params = { { "name", "proj new" } };
-  mcp::json result = handle_describe_command (params);
+  auto result = handle_describe_command (R"({"name":"proj new"})");
   std::string text = get_text (result);
 
   CHECK (text.find ("Command: proj new") != std::string::npos);
@@ -173,22 +185,23 @@ TEST_CASE ("handle_describe_command returns command details")
   CHECK (text.find ("Syntax:") != std::string::npos);
 }
 
-TEST_CASE ("handle_describe_command throws for unknown command")
+TEST_CASE ("handle_describe_command errors for unknown command")
 {
-  mcp::json params = { { "name", "does_not_exist" } };
-  CHECK_THROWS_AS (handle_describe_command (params), mcp::mcp_exception);
+  auto result = handle_describe_command (R"({"name":"does_not_exist"})");
+  CHECK (!result.has_value ());
+  CHECK (result.error ().code == mcp::INVALID_PARAMS);
 }
 
-TEST_CASE ("handle_describe_command throws when name missing")
+TEST_CASE ("handle_describe_command errors when name missing")
 {
-  mcp::json params = mcp::json::object ();
-  CHECK_THROWS_AS (handle_describe_command (params), mcp::mcp_exception);
+  auto result = handle_describe_command ("{}");
+  CHECK (!result.has_value ());
+  CHECK (result.error ().code == mcp::INVALID_PARAMS);
 }
 
 TEST_CASE ("handle_describe_command shows parameters and examples")
 {
-  mcp::json params = { { "name", "proj new" } };
-  mcp::json result = handle_describe_command (params);
+  auto result = handle_describe_command (R"({"name":"proj new"})");
   std::string text = get_text (result);
 
   CHECK (text.find ("Parameters:") != std::string::npos);
@@ -197,8 +210,7 @@ TEST_CASE ("handle_describe_command shows parameters and examples")
 
 TEST_CASE ("handle_get_quick_start returns guide")
 {
-  mcp::json params = mcp::json::object ();
-  mcp::json result = handle_get_quick_start (params);
+  auto result = handle_get_quick_start ("{}");
   std::string text = get_text (result);
 
   CHECK (text.find ("Quick Start") != std::string::npos);
@@ -208,14 +220,50 @@ TEST_CASE ("handle_get_quick_start returns guide")
 
 TEST_CASE ("handle_cli_capabilities returns manifest")
 {
-  mcp::json params = mcp::json::object ();
-  mcp::json result = handle_cli_capabilities (params);
+  auto result = handle_cli_capabilities ("{}");
   std::string text = get_text (result);
 
   CHECK (text.find ("Fully Implemented") != std::string::npos);
   CHECK (text.find ("NOT Implemented") != std::string::npos);
   CHECK (text.find ("proj new") != std::string::npos);
   CHECK (text.find ("sig") != std::string::npos);
+}
+
+TEST_CASE ("handle_list_components returns registered components")
+{
+  auto result = handle_list_components ("{}");
+  std::string text = get_text (result);
+  CHECK (text.find ("Registered Components") != std::string::npos);
+  CHECK (text.find ("Transform") != std::string::npos);
+}
+
+TEST_CASE ("handle_describe_component errors for unknown")
+{
+  auto result = handle_describe_component (R"({"name":"nope"})");
+  CHECK (!result.has_value ());
+  CHECK (result.error ().code == mcp::INVALID_PARAMS);
+}
+
+TEST_CASE ("handle_describe_das_api lists functions without name")
+{
+  auto result = handle_describe_das_api ("{}");
+  std::string text = get_text (result);
+  CHECK (text.find ("Weasel Daslang API") != std::string::npos);
+}
+
+TEST_CASE ("tool_builder emits input schemas")
+{
+  mcp::tool t = mcp::tool_builder ("describe_command")
+                    .with_description ("desc")
+                    .with_string_param ("name", "Name.")
+                    .build ();
+  CHECK (t.name == "describe_command");
+  CHECK (t.input_schema.find ("\"name\"") != std::string::npos);
+  CHECK (t.input_schema.find ("\"required\"") != std::string::npos);
+
+  mcp::tool no_params
+      = mcp::tool_builder ("list_commands").with_description ("d").build ();
+  CHECK (no_params.input_schema.find ("properties") != std::string::npos);
 }
 
 // ============================================================================

@@ -3,12 +3,17 @@
 #include "cli_reference.hpp"
 #include "das_api_info.hpp"
 #include "component_info.hpp"
+#include "mcp_helpers.hpp"
 #include "mcp_server_handlers.hpp"
-#include "mcp_stdio_server.hpp"
 #include "namespace_info.hpp"
 
-#include <mcp_server.h>
+#include <agentsdk/mcp/mcp_tool_builder.hpp>
+
+#include <functional>
+#include <map>
 #include <sstream>
+#include <utility>
+#include <vector>
 
 namespace wsl::mcp_server
 {
@@ -16,18 +21,22 @@ namespace wsl::mcp_server
 namespace
 {
 
-mcp::json
-build_text_response (const std::string &text)
+using tool_handler
+    = std::function<agentsdk::result<mcp::tool_result, mcp::mcp_error> (
+        const std::string &)>;
+
+struct tool_entry
 {
-  return { { { "type", "text" }, { "text", text } } };
-}
+  mcp::tool tool;
+  tool_handler handler;
+};
 
 } // namespace
 
-mcp::json
-handle_list_commands (const mcp::json &params)
+agentsdk::result<mcp::tool_result, mcp::mcp_error>
+handle_list_commands (const std::string &args_json)
 {
-  (void)params;
+  (void)args_json;
   const auto &ref = get_cli_reference ();
 
   std::ostringstream oss;
@@ -47,23 +56,22 @@ handle_list_commands (const mcp::json &params)
     }
   }
 
-  return build_text_response (oss.str ());
+  return text_result (oss.str ());
 }
 
-mcp::json
-handle_describe_command (const mcp::json &params)
+agentsdk::result<mcp::tool_result, mcp::mcp_error>
+handle_describe_command (const std::string &args_json)
 {
-  if (!params.contains ("name")) {
-    throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                              "Missing required parameter: name");
+  std::string name;
+  std::string error;
+  if (!get_string_arg (args_json, "name", name, error)) {
+    return param_error (error);
   }
 
-  const std::string name = params["name"].get<std::string> ();
   const cli_command_info *info = find_command (name);
 
   if (!info) {
-    throw mcp::mcp_exception (mcp::error_code::invalid_params,
-                              "Unknown command: " + name);
+    return param_error ("Unknown command: " + name);
   }
 
   std::ostringstream oss;
@@ -86,13 +94,13 @@ handle_describe_command (const mcp::json &params)
     }
   }
 
-  return build_text_response (oss.str ());
+  return text_result (oss.str ());
 }
 
-mcp::json
-handle_get_quick_start (const mcp::json &params)
+agentsdk::result<mcp::tool_result, mcp::mcp_error>
+handle_get_quick_start (const std::string &args_json)
 {
-  (void)params;
+  (void)args_json;
   std::ostringstream oss;
   oss << "Weasel Engine CLI Quick Start\n\n";
   oss << "1. Create a project:\n";
@@ -144,13 +152,13 @@ handle_get_quick_start (const mcp::json &params)
          "Body).\n";
   oss << "For implementation status, use cli_capabilities.";
 
-  return build_text_response (oss.str ());
+  return text_result (oss.str ());
 }
 
-mcp::json
-handle_cli_capabilities (const mcp::json &params)
+agentsdk::result<mcp::tool_result, mcp::mcp_error>
+handle_cli_capabilities (const std::string &args_json)
 {
-  (void)params;
+  (void)args_json;
   std::ostringstream oss;
   oss << "Weasel CLI/REPL Capabilities Manifest\n";
   oss << "======================================\n\n";
@@ -226,7 +234,7 @@ handle_cli_capabilities (const mcp::json &params)
   oss << "== Previously Fixed Limitations ==\n";
   oss << "  - Component type names now accept short names (transform,\n";
   oss << "    rigid_body), display names (Transform), or fully qualified\n";
-  oss << "    C++ names (wsl::comp::transform)\n";
+  oss << "    C++ names (wsl::comp::rigid_body)\n";
   oss << "  - model_id property on model_instance_3d now accepts\n";
   oss << "    builtin:// paths (e.g. builtin://cube) without crashing\n";
   oss << "  - sys add <name> can attach user-defined systems to scenes "
@@ -257,15 +265,16 @@ handle_cli_capabilities (const mcp::json &params)
   oss << "    NOT display names (e.g. Motion Type) or serialization names\n";
   oss << "  - comp set only works on components with register_meta() called\n";
 
-  return build_text_response (oss.str ());
+  return text_result (oss.str ());
 }
 
-mcp_server_app::mcp_server_app ([[maybe_unused]] const std::string &host,
-                                [[maybe_unused]] int port)
-    : m_server (mcp::server::configuration{ host, port })
+mcp_server_app::mcp_server_app ()
+    : m_server (mcp::implementation_info{ "Weasel MCP Server", std::nullopt,
+                                          "0.1.0" },
+                mcp::server_capabilities{ mcp::tools_capability{ false },
+                                          std::nullopt, std::nullopt, false,
+                                          false })
 {
-  mcp::json capabilities = { { "tools", mcp::json::object () } };
-
   const char *instructions
       = "This MCP server provides reference documentation for the Weasel "
         "Engine and CLI passthrough tools for mutations. When suggesting "
@@ -295,164 +304,83 @@ mcp_server_app::mcp_server_app ([[maybe_unused]] const std::string &host,
         "confirm=true)\n"
         "    component_set — set a component property (structured, "
         "confirm=true)";
-  m_server.set_server_info ("Weasel MCP Server", "0.1.0");
-  m_server.set_capabilities (capabilities);
   m_server.set_instructions (instructions);
-
-  m_stdio_server.set_server_info ("Weasel MCP Server", "0.1.0");
-  m_stdio_server.set_capabilities (capabilities);
-  m_stdio_server.set_instructions (instructions);
 
   register_tools ();
 }
 
 void
-mcp_server_app::set_stdio_mode (bool enable)
-{
-  stdio_mode_ = enable;
-}
-
-void
 mcp_server_app::run ()
 {
-  if (stdio_mode_) {
-    m_stdio_server.run ();
-  } else {
-    m_server.start (true);
-  }
+  m_server.run ();
 }
 
 void
 mcp_server_app::register_tools ()
 {
-  mcp::tool list_tool
-      = mcp::tool_builder ("list_commands")
-            .with_description (
-                "List all available weasel-cli and REPL commands.")
-            .build ();
-  m_server.register_tool (list_tool, [] (const mcp::json &params,
-                                         const std::string & /*session_id*/) {
-    return handle_list_commands (params);
-  });
-  m_stdio_server.register_tool (
-      list_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_list_commands (params);
-      });
+  std::vector<tool_entry> tools;
 
-  mcp::tool desc_tool
-      = mcp::tool_builder ("describe_command")
+  tools.push_back ({ mcp::tool_builder ("list_commands")
+                         .with_description (
+                             "List all available weasel-cli and REPL commands.")
+                         .build (),
+                     handle_list_commands });
+
+  tools.push_back (
+      { mcp::tool_builder ("describe_command")
             .with_description (
                 "Get detailed usage information for a specific command.")
             .with_string_param ("name", "Name of the command to describe.")
-            .build ();
-  m_server.register_tool (desc_tool, [] (const mcp::json &params,
-                                         const std::string & /*session_id*/) {
-    return handle_describe_command (params);
-  });
-  m_stdio_server.register_tool (
-      desc_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_describe_command (params);
-      });
+            .build (),
+        handle_describe_command });
 
-  mcp::tool quick_tool
-      = mcp::tool_builder ("get_quick_start")
+  tools.push_back (
+      { mcp::tool_builder ("get_quick_start")
             .with_description ("Return a quick-start guide for the Weasel CLI.")
-            .build ();
-  m_server.register_tool (quick_tool, [] (const mcp::json &params,
-                                          const std::string & /*session_id*/) {
-    return handle_get_quick_start (params);
-  });
-  m_stdio_server.register_tool (
-      quick_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_get_quick_start (params);
-      });
+            .build (),
+        handle_get_quick_start });
 
-  // --- Component introspection tools ---
-
-  mcp::tool list_comp_tool
-      = mcp::tool_builder ("list_components")
+  tools.push_back (
+      { mcp::tool_builder ("list_components")
             .with_description (
                 "List all registered ECS components with their fully "
                 "qualified C++ type names.")
-            .build ();
-  m_server.register_tool (
-      list_comp_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_list_components (params);
-      });
-  m_stdio_server.register_tool (
-      list_comp_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_list_components (params);
-      });
+            .build (),
+        handle_list_components });
 
-  mcp::tool desc_comp_tool
-      = mcp::tool_builder ("describe_component")
+  tools.push_back (
+      { mcp::tool_builder ("describe_component")
             .with_description (
                 "Get detailed information about a registered component: all "
                 "properties, their types, enum values, and descriptions.")
             .with_string_param (
                 "name", "Component name (display name like 'Rigid Body' "
                         "or C++ type like 'wsl::comp::rigid_body').")
-            .build ();
-  m_server.register_tool (
-      desc_comp_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_describe_component (params);
-      });
-  m_stdio_server.register_tool (
-      desc_comp_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_describe_component (params);
-      });
+            .build (),
+        handle_describe_component });
 
-  // --- Engine Namespace documentation tools ---
-
-  mcp::tool list_ns_tool
-      = mcp::tool_builder ("list_namespaces")
+  tools.push_back (
+      { mcp::tool_builder ("list_namespaces")
             .with_description (
                 "List all engine namespaces (comp, sys, rsc, phys, gfx, math, "
                 "reg) with brief descriptions. Use describe_namespace for "
                 "detailed documentation on how to use each one.")
-            .build ();
-  m_server.register_tool (
-      list_ns_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_list_namespaces (params);
-      });
-  m_stdio_server.register_tool (
-      list_ns_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_list_namespaces (params);
-      });
+            .build (),
+        handle_list_namespaces });
 
-  mcp::tool desc_ns_tool
-      = mcp::tool_builder ("describe_namespace")
+  tools.push_back (
+      { mcp::tool_builder ("describe_namespace")
             .with_description (
                 "Get detailed documentation about an engine namespace: what "
                 "it contains, key classes, and how to use it to write a game.")
             .with_string_param (
                 "name",
                 "Namespace name: comp, sys, rsc, phys, gfx, math, or reg.")
-            .build ();
-  m_server.register_tool (
-      desc_ns_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_describe_namespace (params);
-      });
-  m_stdio_server.register_tool (
-      desc_ns_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_describe_namespace (params);
-      });
+            .build (),
+        handle_describe_namespace });
 
-  // --- Daslang API reference tool ---
-
-  mcp::tool das_api_tool
-      = mcp::tool_builder ("describe_das_api")
+  tools.push_back (
+      { mcp::tool_builder ("describe_das_api")
             .with_description (
                 "Describe the Daslang API exposed to .das scripts by the "
                 "engine "
@@ -464,60 +392,29 @@ mcp_server_app::register_tools ()
                 "name",
                 "Optional function name (e.g. apply_force, is_key_pressed).",
                 false)
-            .build ();
-  m_server.register_tool (
-      das_api_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_describe_das_api (params);
-      });
-  m_stdio_server.register_tool (
-      das_api_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_describe_das_api (params);
-      });
+            .build (),
+        handle_describe_das_api });
 
-  // --- CLI capabilities tool ---
-
-  mcp::tool cli_cap_tool
-      = mcp::tool_builder ("cli_capabilities")
+  tools.push_back (
+      { mcp::tool_builder ("cli_capabilities")
             .with_description ("List which CLI/REPL commands are actually "
                                "implemented vs. documented but missing.")
-            .build ();
-  m_server.register_tool (
-      cli_cap_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_cli_capabilities (params);
-      });
-  m_stdio_server.register_tool (
-      cli_cap_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_cli_capabilities (params);
-      });
+            .build (),
+        handle_cli_capabilities });
 
-  // --- CLI passthrough / mutation tools ---
-
-  mcp::tool script_reload_tool
-      = mcp::tool_builder ("script_reload")
+  tools.push_back (
+      { mcp::tool_builder ("script_reload")
             .with_description (
                 "Recompile and reload the user Daslang runtime scripts of the "
                 "project open in the attached editor (same as the editor's "
                 "'Reload Scripts' button or `weasel-cli -a script reload`). "
                 "Returns the CLI output including component/system counts, "
                 "or the compiler error on failure.")
-            .build ();
-  m_server.register_tool (
-      script_reload_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_script_reload (params);
-      });
-  m_stdio_server.register_tool (
-      script_reload_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_script_reload (params);
-      });
+            .build (),
+        handle_script_reload });
 
-  mcp::tool run_cli_tool
-      = mcp::tool_builder ("run_cli_command")
+  tools.push_back (
+      { mcp::tool_builder ("run_cli_command")
             .with_description (
                 "Run any weasel-cli command and return its output. Prefers "
                 "attach mode (-a): if a Weasel editor instance is running, "
@@ -538,35 +435,11 @@ mcp_server_app::register_tools ()
                                 "Kill the command after this many seconds "
                                 "(default 120, max 600).",
                                 false)
-            .build ();
-  m_server.register_tool (
-      run_cli_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_run_cli_command (params);
-      });
-  m_stdio_server.register_tool (
-      run_cli_tool,
-      [] (const mcp::json &params, const std::string & /*session_id*/) {
-        return handle_run_cli_command (params);
-      });
+            .build (),
+        handle_run_cli_command });
 
-  // ── E3 tier 2: structured mutation tools ──
-  auto register_structured
-      = [&] (const mcp::tool &tool, mcp::json (*handler) (const mcp::json &)) {
-          m_server.register_tool (
-              tool, [handler] (const mcp::json &params,
-                               const std::string & /*session_id*/) {
-                return handler (params);
-              });
-          m_stdio_server.register_tool (
-              tool, [handler] (const mcp::json &params,
-                               const std::string & /*session_id*/) {
-                return handler (params);
-              });
-        };
-
-  mcp::tool scene_save_tool
-      = mcp::tool_builder ("scene_save")
+  tools.push_back (
+      { mcp::tool_builder ("scene_save")
             .with_description (
                 "Save the active scene back to disk (default or explicit "
                 "path). Structured alternative to `run_cli_command 'scene "
@@ -585,11 +458,11 @@ mcp_server_app::register_tools ()
                                 "Optional project path (standalone).", false)
             .with_boolean_param ("attach", "Attach to a running editor.", false)
             .with_number_param ("timeout_seconds", "Command timeout.", false)
-            .build ();
-  register_structured (scene_save_tool, handle_scene_save);
+            .build (),
+        handle_scene_save });
 
-  mcp::tool entity_add_tool
-      = mcp::tool_builder ("entity_add")
+  tools.push_back (
+      { mcp::tool_builder ("entity_add")
             .with_description (
                 "Create a new entity in the active scene. Structured "
                 "alternative to `run_cli_command 'ent new'`. Requires "
@@ -604,11 +477,11 @@ mcp_server_app::register_tools ()
                                 "Optional project path (standalone).", false)
             .with_boolean_param ("attach", "Attach to a running editor.", false)
             .with_number_param ("timeout_seconds", "Command timeout.", false)
-            .build ();
-  register_structured (entity_add_tool, handle_entity_add);
+            .build (),
+        handle_entity_add });
 
-  mcp::tool entity_remove_tool
-      = mcp::tool_builder ("entity_remove")
+  tools.push_back (
+      { mcp::tool_builder ("entity_remove")
             .with_description (
                 "Destroy an entity from the active scene by id or name. "
                 "Structured alternative to `run_cli_command 'ent rm'`. "
@@ -619,11 +492,11 @@ mcp_server_app::register_tools ()
                                 "Optional project path (standalone).", false)
             .with_boolean_param ("attach", "Attach to a running editor.", false)
             .with_number_param ("timeout_seconds", "Command timeout.", false)
-            .build ();
-  register_structured (entity_remove_tool, handle_entity_remove);
+            .build (),
+        handle_entity_remove });
 
-  mcp::tool component_set_tool
-      = mcp::tool_builder ("component_set")
+  tools.push_back (
+      { mcp::tool_builder ("component_set")
             .with_description (
                 "Set a property on a component instance of an entity. "
                 "Structured alternative to `run_cli_command 'comp set'`. "
@@ -640,8 +513,44 @@ mcp_server_app::register_tools ()
                                 "Optional project path (standalone).", false)
             .with_boolean_param ("attach", "Attach to a running editor.", false)
             .with_number_param ("timeout_seconds", "Command timeout.", false)
-            .build ();
-  register_structured (component_set_tool, handle_component_set);
+            .build (),
+        handle_component_set });
+
+  auto tools_ptr = std::make_shared<std::map<std::string, tool_entry>> ();
+  for (auto &t : tools) {
+    tools_ptr->emplace (t.tool.name, std::move (t));
+  }
+
+  m_server.set_list_tools_handler (
+      [tools_ptr] (const std::optional<std::string> &)
+          -> agentsdk::result<mcp::tools_list_result, mcp::mcp_error> {
+        mcp::tools_list_result r;
+        for (const auto &[name, entry] : *tools_ptr) {
+          (void)name;
+          r.tools.push_back (entry.tool);
+        }
+        return r;
+      });
+
+  m_server.set_call_tool_handler (
+      [tools_ptr] (const std::string &name, const std::string &args)
+          -> agentsdk::result<mcp::tool_result, mcp::mcp_error> {
+        auto it = tools_ptr->find (name);
+        if (it == tools_ptr->end ()) {
+          return mcp::mcp_error{ mcp::METHOD_NOT_FOUND,
+                                 "Tool not found: " + name, std::nullopt };
+        }
+        try {
+          return it->second.handler (args);
+        } catch (const std::exception &e) {
+          mcp::tool_result tr;
+          mcp::text_content t;
+          t.text = std::string ("Internal error: ") + e.what ();
+          tr.content.push_back (mcp::content_block{ t });
+          tr.is_error = true;
+          return tr;
+        }
+      });
 }
 
 } // namespace wsl::mcp_server

@@ -39,11 +39,11 @@ end)
 -- These override or supplement xrepo packages.
 -- ---------------------------------------------------------------------------
 
--- agentsdk-cpp (ldapx/agentsdk-cpp) — A2A + ACP agent SDK (not in xrepo)
+-- agentsdk-cpp (ldapx/agentsdk-cpp) — A2A + ACP + MCP agent SDK (not in xrepo)
 package("agentsdk")
     set_kind("library")
     set_homepage("https://github.com/ldapx/agentsdk-cpp")
-    set_description("AgentSDK C++ — A2A and ACP client SDK")
+    set_description("AgentSDK C++ — A2A, ACP and MCP SDK")
     set_license("MIT")
     add_urls("https://github.com/ldapx/agentsdk-cpp.git")
     add_versions("dev", "dev")
@@ -62,17 +62,18 @@ package("agentsdk")
                 -- No fmt_external: the bundled fmt headers suffice, and
                 -- skipping a second fmt build avoids a source-tree race.
                 add_defines("SPDLOG_COMPILED_LIB")
-                -- Windows: the server-side transports have no support
-                -- upstream (BSD sockets in http_listener, stdin select in
-                -- mcp_server). weasel only links the ACP/MCP client side
-                -- (stdio transport), which is ported; nothing references
-                -- these objects, so they are dropped from the build.
+                -- Windows: the A2A HTTP server transports have no support
+                -- upstream (BSD sockets in http_listener). weasel only links
+                -- the ACP/MCP client side plus the MCP stdio server, which
+                -- are portable; nothing references these objects, so they
+                -- are dropped from the build. mcp_server.cpp stays: its
+                -- stdin pump is portable (background reader thread with
+                -- unbuffered reads).
                 if is_plat("windows") then
                     remove_files("src/agentsdk/a2a/http/http_listener.cpp",
                                  "src/agentsdk/a2a/http/http_server.cpp",
                                  "src/agentsdk/a2a/http/json_rpc_server.cpp",
-                                 "src/agentsdk/a2a/server.cpp",
-                                 "src/agentsdk/mcp/mcp_server.cpp")
+                                 "src/agentsdk/a2a/server.cpp")
                 end
                 add_includedirs("src", {public = true})
                 -- simdjson and curl types appear in the public headers
@@ -97,43 +98,6 @@ package("agentsdk")
         package:add("includedirs", "include")
         package:add("defines", "SPDLOG_COMPILED_LIB")
         package:add("deps", "libcurl")
-    end)
-package_end()
-
--- cpp-mcp (hkr04/cpp-mcp) — MCP SDK (static lib, not in xrepo)
-package("cpp-mcp")
-    set_kind("library")
-    set_homepage("https://github.com/hkr04/cpp-mcp")
-    set_description("cpp-mcp — C++ MCP SDK")
-    set_license("MIT")
-    add_urls("https://github.com/hkr04/cpp-mcp.git")
-    add_versions("main", "main")
-    on_install(function (package)
-        io.writefile("xmake.lua", [[
-            add_rules("mode.debug", "mode.release")
-            set_languages("c++17")
-            target("mcp")
-                set_kind("$(kind)")
-                add_files("src/*.cpp")
-                add_headerfiles("include/*.h", "include/*.hpp", "common/*.h", "common/*.hpp")
-                add_includedirs("include", "common")
-                add_defines("MCP_MAX_SESSIONS=10", "MCP_SESSION_TIMEOUT=30")
-                if is_plat("linux") then
-                    add_syslinks("pthread")
-                elseif is_plat("windows") then
-                    add_syslinks("ws2_32", "wsock32")
-                end
-        ]])
-        import("package.tools.xmake").install(package)
-    end)
-    on_load(function (package)
-        package:add("defines", "MCP_MAX_SESSIONS=10")
-        package:add("defines", "MCP_SESSION_TIMEOUT=30")
-        package:add("includedirs", "include")
-        package:add("includedirs", "common")
-    end)
-    on_test(function (package)
-        assert(package:check_cxxsnippets({test = [[void test(){ }]]}, {configs = {languages = "c++20"}}))
     end)
 package_end()
 
@@ -726,7 +690,6 @@ add_requires("imgizmo2d", {optional = true})
 add_requires("imnodeflow", {optional = true})
 add_requires("imguitextselect", {optional = true})
 add_requires("imguicolortextedit", {optional = true})
-add_requires("cpp-mcp", {optional = true})
 
 -- daslang — optional for now (binary bundle vs source build mismatch)
 option("with_daslang", {default = true, showmenu = true, description = "Enable daslang scripting"})
@@ -1334,16 +1297,14 @@ target("mcp_server_lib")
     remove_files("src/mcp-server/main.cpp")
     add_includedirs("src")
     add_deps("wsl")
-    add_packages("cli11")
-    add_packages("cpp-mcp", {public = true, optional = true})
+    add_packages("cli11", "agentsdk", "simdjson")
 
 target("weasel-mcp-server")
     set_kind("binary")
     set_languages("c++20")
     add_files("src/mcp-server/main.cpp")
     add_deps("mcp_server_lib", "wsl")
-    add_packages("cli11")
-    add_packages("cpp-mcp", {optional = true})
+    add_packages("cli11", "agentsdk", "simdjson")
     add_includedirs("src")
     add_cxxflags("-Wall", "-Wextra", "-Wpedantic")
     if is_plat("windows") then
@@ -1368,7 +1329,7 @@ target("weasel_mcp_server_tests")
     set_languages("c++20")
     add_files("tests/mcp-server/*.cpp")
     add_deps("mcp_server_lib")
-    add_packages("doctest", "cpp-mcp")
+    add_packages("doctest", "agentsdk", "simdjson")
     add_includedirs("src")
     add_defines("WSL_SOURCE_DIR=\"" .. projectdir_fwd .. "\"")
     add_tests("weasel_mcp_server_tests")
