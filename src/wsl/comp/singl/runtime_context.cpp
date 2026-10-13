@@ -203,10 +203,13 @@ comp::singl::runtime_context::runtime_context (
 comp::singl::runtime_context::~runtime_context ()
 {
   wsl::log::core ()->debug ("Shutting down runtime context");
+  m_runtime_project_module.unload ();
+  m_scene_manager.set_active (nullptr);
   // The main resource manager depends on the runtime world, core systems, and
   // GPU device still being alive. Shut it down explicitly before member
   // destruction starts.
   m_resource_manager->shutdown ();
+  m_world.clear ();
 }
 
 void

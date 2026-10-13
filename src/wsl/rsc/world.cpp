@@ -40,6 +40,8 @@ rsc::world::destroy_scene (scene *target)
     return;
   }
 
+  target->stop_and_clear ();
+
   m_scenes.erase (
       std::remove_if (m_scenes.begin (), m_scenes.end (),
                       [&] (const std::unique_ptr<scene> &scene_ptr) {
@@ -75,6 +77,11 @@ rsc::world::get_scenes () const
 void
 rsc::world::clear ()
 {
+  for (const auto &scene : m_scenes) {
+    if (scene != nullptr) {
+      scene->stop_and_clear ();
+    }
+  }
   m_scenes.clear ();
 }
 

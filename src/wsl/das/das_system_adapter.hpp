@@ -6,6 +6,9 @@
 #include "modules/weasel_ecs_adapter_gen.inc"
 #endif
 #ifndef IN_MODULE_INTERFACE
+#include <cstdint>
+#endif
+#ifndef IN_MODULE_INTERFACE
 #include <memory>
 #endif
 #ifndef IN_MODULE_INTERFACE
@@ -105,7 +108,14 @@ public:
    */
   bool add_script_event_sink (entt::id_type event_id,
                               std::string_view event_name,
-                              std::string_view method_name);
+                              std::string_view method_name,
+                              std::size_t event_size = 0,
+                              std::uint64_t payload_layout_hash = 0);
+
+  /** Returns the raw-POD structure accepted by a declared event method. */
+  bool event_handler_payload_signature (const char *method_name,
+                                        std::size_t &payload_size,
+                                        std::uint64_t &layout_hash) const;
 
   /** Returns ``true`` when the daslang class declares a method `method_name`.
    */
@@ -148,6 +158,7 @@ private:
     std::string event_name;
     std::string method_name;
     std::size_t event_size = 0;
+    std::uint64_t payload_layout_hash = 0;
   };
 
   /** Heap block passed as the sink ``owner`` so one static thunk can serve

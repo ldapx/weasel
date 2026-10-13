@@ -169,9 +169,9 @@ there is no `set_component_t` write-back step.
 
 ## SIGSEGV Protection
 
-The `call_void_function_safe()` methods install a signal handler before calling into the VM. Null dereferences, out-of-bounds accesses, and use-after-free crashes are caught and turned into error messages instead of crashing the engine.
+The `call_void_function_safe()` methods recover from daScript panics and report them as errors. Native faults such as null dereferences, out-of-bounds accesses, and use-after-free crashes are fatal and are not converted into a recoverable VM error.
 
-The handler uses `sigaltstack` to handle stack overflow crashes, and combines both SIGSEGV (via signal handler) and daScript `panic()` (via `longjmp`) into a single recovery path.
+The crash handler uses `sigaltstack` to print a short diagnostic before restoring the default SIGSEGV action and re-raising the signal. daScript `panic()` recovery remains a separate path and restores engine bookkeeping after the VM's `longjmp`.
 
 ## Architecture Decisions
 

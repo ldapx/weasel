@@ -507,8 +507,11 @@ run_mixed_query ()
   const entt::id_type type_id = entt::hashed_string{ "mouse_rotate" }.value ();
   std::vector<wsl::reg::component_registry::descriptor::das_field> fields;
   for (const auto &field : info.fields) {
-    fields.push_back ({ field.name, field.type_name, field.offset, field.size,
-                        field.kind, field.default_value });
+    fields.push_back ({
+        field.name, field.type_name,
+        static_cast<std::uint32_t> (field.offset),
+        static_cast<std::uint32_t> (field.size), field.kind,
+        field.default_value });
   }
   runtime.component_registry ().register_cached_runtime_world_component (
       type_id, "mouse_rotate", "Mouse Rotate", info.size_of,
@@ -628,8 +631,11 @@ run_generic_das_accessor ()
   const entt::id_type type_id = entt::hashed_string{ "mouse_rotate" }.value ();
   std::vector<wsl::reg::component_registry::descriptor::das_field> fields;
   for (const auto &field : info.fields) {
-    fields.push_back ({ field.name, field.type_name, field.offset, field.size,
-                        field.kind, field.default_value });
+    fields.push_back ({
+        field.name, field.type_name,
+        static_cast<std::uint32_t> (field.offset),
+        static_cast<std::uint32_t> (field.size), field.kind,
+        field.default_value });
   }
   runtime.component_registry ().register_cached_runtime_world_component (
       type_id, "mouse_rotate", "Mouse Rotate", info.size_of,
@@ -750,8 +756,11 @@ register_mouse_rotate (wsl::das::das_engine &engine,
   }
   std::vector<wsl::reg::component_registry::descriptor::das_field> fields;
   for (const auto &field : info.fields) {
-    fields.push_back ({ field.name, field.type_name, field.offset, field.size,
-                        field.kind, field.default_value });
+    fields.push_back ({
+        field.name, field.type_name,
+        static_cast<std::uint32_t> (field.offset),
+        static_cast<std::uint32_t> (field.size), field.kind,
+        field.default_value });
   }
   runtime.component_registry ().register_cached_runtime_world_component (
       type_id, "mouse_rotate", "Mouse Rotate", info.size_of,

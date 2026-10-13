@@ -34,79 +34,35 @@ private:
   das_system_adapter *m_previous;
 };
 
+class active_registry_guard
+{
+public:
+  explicit active_registry_guard (entt::registry &registry)
+      : m_previous (wsl_api_set_active_registry (&registry))
+  {
+  }
+
+  ~active_registry_guard () { wsl_api_set_active_registry (m_previous); }
+
+  active_registry_guard (const active_registry_guard &) = delete;
+  active_registry_guard &operator= (const active_registry_guard &) = delete;
+
+private:
+  entt::registry *m_previous;
+};
+
 template <typename Fn>
 bool
 safe_invoke (Context *ctx, const char *method_name,
              const std::string &script_path, Fn &&fn)
 {
-  if (!ctx) {
-    return false;
-  }
-
-  // Save context state (same as evalWithCatch)
-  auto aa = ctx->abiArg;
-  auto acm = ctx->abiCMRES;
-  auto atba = ctx->abiThisBlockArg;
-  char *EP, *SP;
-  ctx->stack.watermark (EP, SP);
-  auto *saved_throwBuf = ctx->throwBuf;
-
-  // Install SIGSEGV handler and set throwBuf to our jmp_buf
-  das_signal::install ();
-  jmp_buf sj;
-  das_signal::tls_jmp = &sj;
-  ctx->throwBuf = &sj;
-
-  bool caught = false;
-  if (setjmp (sj) == 0) {
-    fn ();
-  } else {
-    caught = true;
-  }
-
-  // Restore context state
-  ctx->throwBuf = saved_throwBuf;
-  das_signal::tls_jmp = nullptr;
-  das_signal::restore ();
-
-  if (caught) {
-    const char *ex = ctx->getException ();
-    if (ex) {
-      std::string file;
-      int line = ctx->exceptionAt.line;
-      if (ctx->exceptionAt.fileInfo) {
-        file = ctx->exceptionAt.fileInfo->name;
-      }
-      wsl::log::xmake ()->error (
-          "das_system_adapter::{} failed in '{}': {} (at {}:{})", method_name,
-          script_path, ex, file, line);
-      ctx->clearException ();
-    } else {
-      wsl::log::xmake ()->error (
-          "das_system_adapter::{} SEGFAULT in '{}' — possible null "
-          "dereference or invalid pointer in daslang script",
-          method_name, script_path);
-    }
-    // Restore context state after longjmp
-    ctx->abiArg = aa;
-    ctx->abiCMRES = acm;
-    ctx->abiThisBlockArg = atba;
-    ctx->stack.pop (EP, SP);
-    return false;
-  }
-
-  // Check for daScript panics
-  const char *ex = ctx->getException ();
-  if (ex) {
-    std::string file;
-    int line = ctx->exceptionAt.line;
-    if (ctx->exceptionAt.fileInfo) {
-      file = ctx->exceptionAt.fileInfo->name;
-    }
+  das_error error;
+  if (!run_protected_call (
+          ctx, method_name,
+          std::function<void ()> (std::forward<Fn> (fn)), error)) {
     wsl::log::xmake ()->error (
         "das_system_adapter::{} failed in '{}': {} (at {}:{})", method_name,
-        script_path, ex, file, line);
-    ctx->clearException ();
+        script_path, error.message, error.file, error.line);
     return false;
   }
   return true;
@@ -146,7 +102,7 @@ das_system_adapter::on_init (entt::registry &registry)
     return;
   }
   m_has_failed = false;
-  wsl_api_set_active_registry (&registry);
+  active_registry_guard registry_guard (registry);
   current_adapter_guard adapter_guard (this);
   auto fn = get_on_init (m_class_ptr);
   if (fn) {
@@ -157,7 +113,6 @@ das_system_adapter::on_init (entt::registry &registry)
                               get_name ());
     }
   }
-  wsl_api_set_active_registry (nullptr);
 }
 
 void
@@ -169,7 +124,7 @@ das_system_adapter::on_update (entt::registry &registry, double dt)
   if (m_has_failed) {
     return;
   }
-  wsl_api_set_active_registry (&registry);
+  active_registry_guard registry_guard (registry);
   current_adapter_guard adapter_guard (this);
   auto fn = get_on_update (m_class_ptr);
   if (fn) {
@@ -181,7 +136,6 @@ das_system_adapter::on_update (entt::registry &registry, double dt)
                               get_name ());
     }
   }
-  wsl_api_set_active_registry (nullptr);
 }
 
 void
@@ -190,7 +144,7 @@ das_system_adapter::on_inactive (entt::registry &registry)
   if (!m_class_ptr || !m_ctx) {
     return;
   }
-  wsl_api_set_active_registry (&registry);
+  active_registry_guard registry_guard (registry);
   current_adapter_guard adapter_guard (this);
   if (auto fn = get_on_inactive (m_class_ptr)) {
     if (!safe_invoke (m_ctx, "on_inactive", m_script_path, [&] () {
@@ -201,7 +155,6 @@ das_system_adapter::on_inactive (entt::registry &registry)
                               get_name ());
     }
   }
-  wsl_api_set_active_registry (nullptr);
 }
 
 // ── Script-declared event sources / sinks ──
@@ -233,7 +186,8 @@ das_system_adapter::register_event_sinks (event::event_hub &hub)
 
     hub.declare_event_sink_by_id (
         decl.event_id, decl.event_name, get_type_id (), get_name (),
-        decl.method_name.c_str (), sink_thunk, m_sink_invokers[i].get ());
+        decl.method_name.c_str (), sink_thunk, m_sink_invokers[i].get (),
+        decl.event_size, this, decl.payload_layout_hash);
   }
 }
 
@@ -262,16 +216,20 @@ das_system_adapter::add_script_event_source (entt::id_type event_id,
 bool
 das_system_adapter::add_script_event_sink (entt::id_type event_id,
                                            std::string_view event_name,
-                                           std::string_view method_name)
+                                           std::string_view method_name,
+                                           std::size_t event_size,
+                                           std::uint64_t payload_layout_hash)
 {
   for (const event_declaration &decl : m_event_sinks) {
     if (decl.event_id == event_id && decl.method_name == method_name) {
-      return true;
+      return decl.event_size == event_size
+             && decl.payload_layout_hash == payload_layout_hash;
     }
   }
 
   m_event_sinks.push_back (
-      { event_id, std::string (event_name), std::string (method_name), 0 });
+      { event_id, std::string (event_name), std::string (method_name),
+        event_size, payload_layout_hash });
 
   auto *rc = try_get_runtime_context ();
   if (rc != nullptr) {
@@ -279,6 +237,43 @@ das_system_adapter::add_script_event_sink (entt::id_type event_id,
   }
 
   return true;
+}
+
+bool
+das_system_adapter::event_handler_payload_signature (
+    const char *method_name, std::size_t &payload_size,
+    std::uint64_t &layout_hash) const
+{
+  if (m_class_info == nullptr || m_class_info->fields == nullptr
+      || method_name == nullptr) {
+    return false;
+  }
+
+  for (std::uint32_t i = 0; i < m_class_info->count; ++i) {
+    const ::das::VarInfo *method = m_class_info->fields[i];
+    if (method == nullptr || method->name == nullptr
+        || std::string_view (method->name) != method_name) {
+      continue;
+    }
+    if ((method->type != ::das::Type::tBlock
+         && method->type != ::das::Type::tFunction)
+        || method->argCount != 1
+        || method->argTypes == nullptr || method->argTypes[0] == nullptr) {
+      return false;
+    }
+
+    const ::das::TypeInfo *payload = method->argTypes[0];
+    if (payload->type != ::das::Type::tStructure
+        || payload->structType == nullptr || !payload->isRawPod ()
+        || payload->size == 0) {
+      return false;
+    }
+
+    payload_size = payload->size;
+    layout_hash = das_struct_layout_hash (payload->structType);
+    return layout_hash != 0;
+  }
+  return false;
 }
 
 bool
@@ -340,7 +335,8 @@ das_system_adapter::invoke_event_handler (std::size_t index,
     return;
   }
 
-  wsl_api_set_active_registry (&registry);
+  active_registry_guard registry_guard (registry);
+  current_adapter_guard adapter_guard (this);
 
   // Struct payloads pass by reference through the daslang ABI; a raw pointer
   // in the argument slot is exactly what a struct parameter expects.
@@ -353,7 +349,6 @@ das_system_adapter::invoke_event_handler (std::size_t index,
                             get_name ());
   }
 
-  wsl_api_set_active_registry (nullptr);
 }
 
 } // namespace wsl::das
@@ -398,6 +393,13 @@ das_system_adapter::register_event_sources (event::event_hub &)
 void
 das_system_adapter::register_event_sinks (event::event_hub &)
 {
+}
+bool
+das_system_adapter::event_handler_payload_signature (const char *,
+                                                     std::size_t &,
+                                                     std::uint64_t &) const
+{
+  return false;
 }
 bool
 das_system_adapter::has_method (const char *) const

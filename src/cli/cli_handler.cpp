@@ -754,7 +754,12 @@ cli_handler::parse (int argc, char **argv)
               rtc.runtime_project_module ().last_status ());
           return { true, 1, std::nullopt };
         }
-        rtc.runtime_project_module ().finalize_load ();
+        if (!rtc.runtime_project_module ().finalize_load ()) {
+          wsl::log::cli ()->error (
+              "Runtime module registration failed: {}",
+              rtc.runtime_project_module ().last_error ());
+          return { true, 1, std::nullopt };
+        }
       }
 
       wsl::rsc::scene scene{ &rtc, nullptr, "ValidationScene" };

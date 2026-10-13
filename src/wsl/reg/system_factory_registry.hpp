@@ -22,6 +22,9 @@
 #ifndef IN_MODULE_INTERFACE
 #include <unordered_map>
 #endif
+#ifndef IN_MODULE_INTERFACE
+#include <unordered_set>
+#endif
 
 namespace wsl
 {
@@ -105,6 +108,9 @@ public:
     /** Scene/editor-facing system name. */
     std::string display_name;
 
+    /** Source file for a Daslang system; empty for native factories. */
+    std::string script_path;
+
     /** Factory function that creates a system instance. */
     system_factory_fn factory;
 
@@ -164,7 +170,7 @@ public:
    *
    * Creates a no-op placeholder system for CLI operations.
    */
-  void register_cached_runtime_system (entt::id_type type_id,
+  bool register_cached_runtime_system (entt::id_type type_id,
                                        std::string_view type_name,
                                        std::string_view display_name);
 
@@ -175,7 +181,7 @@ public:
    * script via the engine.
    */
 #if WEASEL_HAS_DASLANG
-  void register_cached_runtime_system (entt::id_type type_id,
+  bool register_cached_runtime_system (entt::id_type type_id,
                                        std::string_view type_name,
                                        std::string_view display_name,
                                        std::string_view script_path,
@@ -270,6 +276,13 @@ public:
     return create (std::string (display_name), scene);
   }
 
+  std::unique_ptr<sys::ecs_system>
+  create_system (entt::id_type type_id, rsc::scene &scene)
+  {
+    const system_descriptor *descriptor = find_system (type_id);
+    return descriptor != nullptr ? descriptor->factory (scene) : nullptr;
+  }
+
   /**
    * Declares that one system depends on another.
    * :param OwnerSystem: The system that has the dependency.
@@ -330,6 +343,9 @@ public:
   }
 
 private:
+  bool register_cached_runtime_descriptor (system_descriptor desc);
+  void rebuild_type_name_index ();
+
   template <typename T>
   static std::unique_ptr<sys::ecs_system>
   make_default_system (const std::string &display_name, rsc::scene &scene)
@@ -355,6 +371,7 @@ private:
   std::unordered_map<std::string, system_descriptor> m_factories;
   std::unordered_map<entt::id_type, std::string> m_type_to_name;
   std::unordered_map<std::string, std::string> m_type_name_to_display_name;
+  std::unordered_set<std::string> m_ambiguous_type_names;
   event::event_hub *m_event_hub = nullptr;
 };
 

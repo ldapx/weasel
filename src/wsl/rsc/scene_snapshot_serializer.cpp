@@ -246,11 +246,9 @@ scene_snapshot_serializer::save (serialize::json_writer &writer) const
     }
 
     if (desc->is_das_singleton) {
-      // Same `singletons` object, keyed by type name; the payload is a hex
-      // string because the value has no reflectable shape.
       append_member (
           singletons_object, first_singleton, desc->type_name,
-          "\"" + singletons.das_singleton_hex (registry, desc->type_id) + "\"");
+          singletons.das_singleton_json (registry, desc->type_id));
       continue;
     }
 
@@ -397,8 +395,9 @@ scene_snapshot_serializer::load (serialize::json_reader &reader)
         try {
           components.load_world_component_json (component_reader, registry,
                                                 desc->type_id);
-        } catch (const std::exception &) {
-          // JSON: missing component data is expected for empty/new scenes.
+        } catch (const std::exception &error) {
+          wsl::log::rsc ()->warn ("Could not restore component '{}': {}",
+                                  member.key, error.what ());
         }
       }
     }
@@ -409,8 +408,9 @@ scene_snapshot_serializer::load (serialize::json_reader &reader)
       serialize::json_reader das_reader{ das_member->value };
       try {
         components.load_das_components_json (das_reader, registry);
-      } catch (const std::exception &) {
-        // Missing das component data is expected
+      } catch (const std::exception &error) {
+        wsl::log::rsc ()->warn ("Could not restore Daslang components: {}",
+                                error.what ());
       }
     }
   }
@@ -432,14 +432,21 @@ scene_snapshot_serializer::load (serialize::json_reader &reader)
 
       reg::singleton_registry &singletons = runtime_ctx->singleton_registry ();
       if (desc->is_das_singleton) {
-        // Hex arrives as a JSON string; strip the quotes before decoding.
-        std::string_view hex = member.value;
-        if ((hex.size () >= 2) && (hex.front () == '"')
-            && (hex.back () == '"')) {
-          hex = hex.substr (1, hex.size () - 2);
+        bool restored = false;
+        if (!member.value.empty () && member.value.front () == '{') {
+          restored = singletons.das_singleton_load_json (
+              scene_registry, desc->type_id, std::string (member.value));
+        } else {
+          // Hex arrives as a JSON string; strip the quotes before decoding.
+          std::string_view hex = member.value;
+          if ((hex.size () >= 2) && (hex.front () == '"')
+              && (hex.back () == '"')) {
+            hex = hex.substr (1, hex.size () - 2);
+          }
+          restored = singletons.das_singleton_load_hex (scene_registry,
+                                                        desc->type_id, hex);
         }
-        if (!singletons.das_singleton_load_hex (scene_registry, desc->type_id,
-                                                hex)) {
+        if (!restored) {
           wsl::log::rsc ()->warn ("Could not restore das singleton: {}",
                                   member.key);
         }
@@ -450,8 +457,9 @@ scene_snapshot_serializer::load (serialize::json_reader &reader)
       try {
         singletons.load_singleton_json (singleton_reader, scene_registry,
                                         desc->type_id);
-      } catch (const std::exception &) {
-        // JSON: missing singleton data is expected for empty/new scenes.
+      } catch (const std::exception &error) {
+        wsl::log::rsc ()->warn ("Could not restore singleton '{}': {}",
+                                member.key, error.what ());
       }
     }
   }

@@ -236,6 +236,42 @@ TEST_CASE ("event_hub: connect / disconnect / dispatch at runtime")
   REQUIRE (handler.hits == 1); // unchanged after disconnect
 }
 
+TEST_CASE ("event_hub: type-erased dispatch rejects equal-size layout mismatch")
+{
+  struct payload
+  {
+    std::uint32_t value = 7;
+  };
+
+  event::event_hub hub;
+  entt::registry registry;
+  int hits = 0;
+  constexpr entt::id_type event_id = 0x101;
+  constexpr entt::id_type system_id = 0x202;
+  constexpr std::uint64_t expected_layout = 0x303;
+
+  hub.resolve_active_registry = [&] () -> entt::registry * {
+    return &registry;
+  };
+  hub.resolve_system_by_type = [] (entt::id_type) -> sys::ecs_system * {
+    return nullptr;
+  };
+  hub.declare_event_sink_by_id (
+      event_id, "script_event", system_id, "script_system", "on_event",
+      +[] (void *owner, entt::registry &, const void *) {
+        ++*static_cast<int *> (owner);
+      },
+      &hits, sizeof (payload), nullptr, expected_layout);
+
+  REQUIRE (hub.connect (event_id, system_id, "on_event"));
+  const payload event{};
+  hub.dispatch_by_id (event_id, &event, sizeof event, expected_layout + 1);
+  CHECK (hits == 0);
+
+  hub.dispatch_by_id (event_id, &event, sizeof event, expected_layout);
+  CHECK (hits == 1);
+}
+
 TEST_CASE ("event_hub: concurrent connect/dispatch stays consistent")
 {
   // Regression test for a heap corruption seen in the editor: scene loading

@@ -45,7 +45,7 @@ system_factory_registry::register_system_factory (
   m_factories[desc.display_name] = std::move (desc);
 }
 
-void
+bool
 system_factory_registry::register_cached_runtime_system (
     entt::id_type type_id, std::string_view type_name,
     std::string_view display_name)
@@ -60,14 +60,11 @@ system_factory_registry::register_cached_runtime_system (
   desc.factory = [display_name = desc.display_name] (rsc::scene &) {
     return std::make_unique<placeholder_system> (display_name);
   };
-
-  m_type_to_name[desc.type_id] = desc.display_name;
-  m_type_name_to_display_name[desc.type_name] = desc.display_name;
-  m_factories[desc.display_name] = std::move (desc);
+  return register_cached_runtime_descriptor (std::move (desc));
 }
 
 #if WEASEL_HAS_DASLANG
-void
+bool
 system_factory_registry::register_cached_runtime_system (
     entt::id_type type_id, std::string_view type_name,
     std::string_view display_name, std::string_view script_path,
@@ -81,8 +78,9 @@ system_factory_registry::register_cached_runtime_system (
                           : std::string (display_name);
   desc.runtime_registered = true;
   desc.stage = std::string (sys::stage_registry::default_stage);
+  desc.script_path = std::string (script_path);
   desc.factory = [display_name = desc.display_name,
-                  script_path = std::string (script_path), type_id,
+                  script_path = desc.script_path, type_id,
                   &engine] (rsc::scene &) -> std::unique_ptr<sys::ecs_system> {
     // User systems must use the Daslang class-adapter contract.
     std::string error;
@@ -98,11 +96,68 @@ system_factory_registry::register_cached_runtime_system (
     return nullptr;
   };
 
-  m_type_to_name[desc.type_id] = desc.display_name;
-  m_type_name_to_display_name[desc.type_name] = desc.display_name;
-  m_factories[desc.display_name] = std::move (desc);
+  return register_cached_runtime_descriptor (std::move (desc));
 }
 #endif
+
+bool
+system_factory_registry::register_cached_runtime_descriptor (
+    system_descriptor desc)
+{
+  const auto same_id = std::find_if (
+      m_factories.begin (), m_factories.end (),
+      [&desc] (const auto &entry) { return entry.second.type_id == desc.type_id; });
+  if (same_id != m_factories.end ()) {
+    const system_descriptor &existing = same_id->second;
+    if (!existing.runtime_registered || existing.type_name != desc.type_name
+        || existing.script_path != desc.script_path) {
+      wsl::log::xmake ()->error (
+          "Runtime system id collision: '{}' ('{}') conflicts with '{}' ('{}')",
+          existing.type_name, existing.script_path, desc.type_name,
+          desc.script_path);
+      return false;
+    }
+    m_factories.erase (same_id);
+  }
+
+  if (const auto same_name = m_factories.find (desc.display_name);
+      same_name != m_factories.end ()
+      && same_name->second.type_id != desc.type_id) {
+    wsl::log::xmake ()->error (
+        "Runtime system display name '{}' is ambiguous between '{}' and '{}'",
+        desc.display_name, same_name->second.script_path, desc.script_path);
+    return false;
+  }
+
+  m_factories[desc.display_name] = std::move (desc);
+  rebuild_type_name_index ();
+  return true;
+}
+
+void
+system_factory_registry::rebuild_type_name_index ()
+{
+  m_type_to_name.clear ();
+  m_type_name_to_display_name.clear ();
+  m_ambiguous_type_names.clear ();
+
+  for (const auto &[display_name, desc] : m_factories) {
+    if (desc.type_id != entt::id_type{}) {
+      m_type_to_name[desc.type_id] = display_name;
+    }
+    if (desc.type_name.empty ()
+        || m_ambiguous_type_names.contains (desc.type_name)) {
+      continue;
+    }
+    const auto [it, inserted]
+        = m_type_name_to_display_name.try_emplace (desc.type_name,
+                                                   display_name);
+    if (!inserted && it->second != display_name) {
+      m_type_name_to_display_name.erase (it);
+      m_ambiguous_type_names.insert (desc.type_name);
+    }
+  }
+}
 
 const system_factory_registry::system_descriptor *
 system_factory_registry::find_system (std::string_view name) const
@@ -117,11 +172,13 @@ system_factory_registry::find_system (std::string_view name) const
   // 2. Fully qualified C++ type name (e.g. "wsl::sys::PlayerControlSystem")
   if (std::unordered_map<std::string, std::string>::const_iterator const tn_it
       = m_type_name_to_display_name.find (std::string (name));
-      tn_it != m_type_name_to_display_name.end ()) {
+      tn_it != m_type_name_to_display_name.end ()
+      && !m_ambiguous_type_names.contains (std::string (name))) {
     return find_system (tn_it->second);
   }
 
   // 3. Short name — last segment after "::" (e.g. "PlayerControlSystem")
+  const system_descriptor *match = nullptr;
   for (const auto &entry : m_factories) {
     if (entry.second.type_name.empty ())
       continue;
@@ -130,11 +187,14 @@ system_factory_registry::find_system (std::string_view name) const
     std::string_view const short_name
         = (pos != std::string_view::npos) ? full.substr (pos + 2) : full;
     if (short_name == name) {
-      return &entry.second;
+      if (match != nullptr) {
+        return nullptr;
+      }
+      match = &entry.second;
     }
   }
 
-  return nullptr;
+  return match;
 }
 
 const system_factory_registry::system_descriptor *
@@ -298,14 +358,9 @@ system_factory_registry::clear_runtime_systems ()
   }
 
   for (const std::string &name : runtime_names) {
-    if (std::unordered_map<std::string, system_descriptor>::const_iterator const
-            it = m_factories.find (name);
-        it != m_factories.end ()) {
-      m_type_to_name.erase (it->second.type_id);
-      m_type_name_to_display_name.erase (it->second.type_name);
-    }
     m_factories.erase (name);
   }
+  rebuild_type_name_index ();
 }
 
 std::vector<std::string>

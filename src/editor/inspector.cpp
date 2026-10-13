@@ -815,7 +815,9 @@ inspector::draw_meta_class (entt::meta_any &object, const glm::vec3 &scale,
 
   // If the class provides a full custom inspector, let it run.
   if (auto fn = type.func (entt::hashed_string{ "custom_inspect" }); fn) {
-    if (entt::meta_any ret = fn.invoke (object, "##component", m_runtime_ctx);
+    if (entt::meta_any ret
+            = fn.invoke (object, static_cast<const char *> ("##component"),
+                         m_runtime_ctx);
         ret) {
       (void)ret.allow_cast<bool> ();
       const bool changed = ret.cast<bool> ();
@@ -831,7 +833,8 @@ inspector::draw_meta_class (entt::meta_any &object, const glm::vec3 &scale,
       return changed;
     }
 
-    if (entt::meta_any ret = fn.invoke (object, "##component"); ret) {
+    if (entt::meta_any ret
+        = fn.invoke (object, static_cast<const char *> ("##component")); ret) {
       (void)ret.allow_cast<bool> ();
       const bool changed = ret.cast<bool> ();
 

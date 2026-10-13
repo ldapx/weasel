@@ -40,6 +40,7 @@
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_keyboard.h>
 #include <entt/core/hashed_string.hpp>
+#include <array>
 #include <chrono>
 #include <cstring>
 
@@ -91,10 +92,17 @@ T &
 fallback_value ()
 {
   static thread_local T value{};
+  value = T{};
   return value;
 }
 
 } // anonymous namespace
+
+entt::registry *
+active_registry ()
+{
+  return get_registry ();
+}
 
 // ── Component accessor proxy helpers ──
 
@@ -107,7 +115,8 @@ TransformProxy::valid () const
 void
 TransformProxy::bind (comp::transform *component)
 {
-  comp = component;
+  (void)component;
+  comp.bind (active_registry (), entity);
 }
 
 ::das::float3 &
@@ -140,7 +149,8 @@ Transform2DProxy::valid () const
 void
 Transform2DProxy::bind (comp::transform_2d *component)
 {
-  comp = component;
+  (void)component;
+  comp.bind (active_registry (), entity);
 }
 
 ::das::float2 &
@@ -172,7 +182,8 @@ Camera2DProxy::valid () const
 void
 Camera2DProxy::bind (comp::camera_2d *component)
 {
-  comp = component;
+  (void)component;
+  comp.bind (active_registry (), entity);
 }
 
 float &
@@ -190,7 +201,8 @@ Sprite2DProxy::valid () const
 void
 Sprite2DProxy::bind (comp::sprite_2d *component)
 {
-  comp = component;
+  (void)component;
+  comp.bind (active_registry (), entity);
 }
 
 ::das::float4 &
@@ -216,7 +228,8 @@ PointLightProxy::valid () const
 void
 PointLightProxy::bind (comp::point_light *component)
 {
-  comp = component;
+  (void)component;
+  comp.bind (active_registry (), entity);
 }
 
 ::das::float3 &
@@ -241,7 +254,8 @@ DirectionalLightProxy::valid () const
 void
 DirectionalLightProxy::bind (comp::directional_light *component)
 {
-  comp = component;
+  (void)component;
+  comp.bind (active_registry (), entity);
 }
 
 ::das::float3 &
@@ -266,7 +280,8 @@ SpotLightProxy::valid () const
 void
 SpotLightProxy::bind (comp::spot_light *component)
 {
-  comp = component;
+  (void)component;
+  comp.bind (active_registry (), entity);
 }
 
 ::das::float3 &
@@ -291,7 +306,8 @@ HierarchyProxy::valid () const
 void
 HierarchyProxy::bind (comp::hierarchy *component)
 {
-  comp = component;
+  (void)component;
+  comp.bind (active_registry (), entity);
 }
 
 uint32_t &
@@ -324,7 +340,8 @@ WorldTransformProxy::valid () const
 void
 WorldTransformProxy::bind (comp::world_transform *component)
 {
-  comp = component;
+  (void)component;
+  comp.bind (active_registry (), entity);
 }
 
 ::das::float4x4 &
@@ -343,7 +360,8 @@ RigidBodyProxy::valid () const
 void
 RigidBodyProxy::bind (comp::rigid_body *component)
 {
-  comp = component;
+  (void)component;
+  comp.bind (active_registry (), entity);
 }
 
 int32_t &
@@ -419,7 +437,8 @@ CharacterBodyProxy::valid () const
 void
 CharacterBodyProxy::bind (comp::character_body *component)
 {
-  comp = component;
+  (void)component;
+  comp.bind (active_registry (), entity);
 }
 
 float &
@@ -450,7 +469,8 @@ ModelInstance3DProxy::valid () const
 void
 ModelInstance3DProxy::bind (comp::model_instance_3d *component)
 {
-  comp = component;
+  (void)component;
+  comp.bind (active_registry (), entity);
 }
 
 uint32_t &
@@ -498,7 +518,8 @@ Area3DProxy::valid () const
 void
 Area3DProxy::bind (comp::area *component)
 {
-  comp = component;
+  (void)component;
+  comp.bind (active_registry (), entity);
 }
 
 int32_t &
@@ -544,7 +565,8 @@ AudioProxy::valid () const
 void
 AudioProxy::bind (comp::audio *component)
 {
-  comp = component;
+  (void)component;
+  comp.bind (active_registry (), entity);
 }
 
 uint32_t &
@@ -586,7 +608,8 @@ PrefabInstanceProxy::valid () const
 void
 PrefabInstanceProxy::bind (comp::prefab_instance *component)
 {
-  comp = component;
+  (void)component;
+  comp.bind (active_registry (), entity);
 }
 
 uint32_t &
@@ -611,7 +634,8 @@ SubviewportProxy::valid () const
 void
 SubviewportProxy::bind (comp::subviewport *component)
 {
-  comp = component;
+  (void)component;
+  comp.bind (active_registry (), entity);
 }
 
 float &
@@ -1317,7 +1341,11 @@ wsl_entity_destroy (uint32_t entity, ::das::Context *context,
   }
   auto e = static_cast<entt::entity> (entity);
   if (reg->valid (e)) {
-    reg->destroy (e);
+    if (reg->ctx ().contains<rsc::scene *> ()) {
+      reg->ctx ().get<rsc::scene *> ()->destroy_entity_subtree (e);
+    } else {
+      reg->destroy (e);
+    }
   }
 }
 
@@ -1675,6 +1703,12 @@ wsl_set_active_camera (uint32_t entity)
 uint32_t
 wsl_instantiate_prefab (const char *path)
 {
+  if (g_query_depth > 0) {
+    wsl::log::sys ()->error (
+        "instantiate_prefab cannot run while a script query is active");
+    return NULL_ENTITY_ID;
+  }
+
   auto *reg = get_registry ();
   if (!reg || !path) {
     return NULL_ENTITY_ID;
@@ -1690,8 +1724,20 @@ wsl_instantiate_prefab (const char *path)
 
   const entt::id_type prefab_hash = entt::hashed_string{ path };
   rsc::scene_id prefab_id{ prefab_hash };
-  entt::entity e
-      = runtime_ctx->resource_manager ().instantiate_prefab (prefab_id);
+  auto &resources = runtime_ctx->resource_manager ();
+  const rsc::scene_state state = resources.state (prefab_id);
+  if (state != rsc::scene_state::loaded) {
+    if (state == rsc::scene_state::not_loaded) {
+      static_cast<void> (resources.load (prefab_id));
+      wsl::log::sys ()->warn (
+          "Prefab '{}' is loading asynchronously; retry instantiate_prefab "
+          "after it finishes",
+          path);
+    }
+    return NULL_ENTITY_ID;
+  }
+
+  entt::entity e = resources.instantiate_prefab (prefab_id);
   return static_cast<uint32_t> (e);
 }
 
@@ -1968,55 +2014,74 @@ each_entity_id_with (const ::das::TArray<uint32_t> &type_ids,
                           ? reg->ctx ().get<comp::singl::runtime_context *> ()
                           : nullptr;
 
-  struct candidate
+  struct term
   {
     const entt::sparse_set *native = nullptr;
-    const ::wsl::reg::das_component_storage::pool *das = nullptr;
+    const ::wsl::reg::runtime_pool *das = nullptr;
     std::size_t size = 0;
   };
 
-  std::vector<candidate> candidates;
-  candidates.reserve (type_ids.size);
+  constexpr std::size_t stack_term_count = 8;
+  std::array<term, stack_term_count> stack_terms{};
+  term *terms = stack_terms.data ();
+  if (type_ids.size > stack_term_count) {
+    static thread_local std::vector<std::vector<term>> overflow_terms_by_depth;
+    const std::size_t depth = wsl_api_get_query_depth ();
+    if (overflow_terms_by_depth.size () <= depth) {
+      overflow_terms_by_depth.resize (depth + 1);
+    }
+    auto &overflow_terms = overflow_terms_by_depth[depth];
+    overflow_terms.resize (type_ids.size);
+    terms = overflow_terms.data ();
+  }
+
   auto *component_registry
       = runtime_ctx != nullptr ? &runtime_ctx->component_registry () : nullptr;
+  std::size_t driver_index = 0;
 
   for (uint32_t i = 0; i < type_ids.size; ++i) {
     const entt::id_type type_id = entt::id_type{ type_ids[i] };
     const auto *desc = component_registry != nullptr
                            ? component_registry->find_world_component (type_id)
                            : nullptr;
-    candidate term{};
+    term &current = terms[i];
+    current = {};
 
     if (desc != nullptr && desc->is_das_component) {
       if (component_registry == nullptr) {
         return;
       }
-      term.das = component_registry->das_component_pool (*reg, type_id);
-      if (term.das == nullptr) {
+      current.das = component_registry->das_component_pool (*reg, type_id);
+      if (current.das == nullptr) {
         return;
       }
-      term.size = term.das->entries.size ();
+      current.size = current.das->size ();
     } else {
-      term.native = reg->storage (type_id);
-      if (term.native == nullptr) {
+      current.native = reg->storage (type_id);
+      if (current.native == nullptr) {
         return;
       }
-      term.size = term.native->size ();
+      current.size = current.native->size ();
     }
 
-    candidates.push_back (term);
-  }
-
-  std::size_t candidate_index = 0;
-  for (std::size_t i = 1; i < candidates.size (); ++i) {
-    if (candidates[i].size < candidates[candidate_index].size) {
-      candidate_index = i;
+    if (i == 0 || current.size < terms[driver_index].size) {
+      driver_index = i;
     }
   }
 
   auto invoke_if_matching = [&] (entt::entity entity) {
-    for (uint32_t i = 0; i < type_ids.size; ++i) {
-      if (!wsl_has_component (type_ids[i], static_cast<uint32_t> (entity))) {
+    if (!reg->valid (entity)) {
+      return;
+    }
+    for (std::size_t i = 0; i < type_ids.size; ++i) {
+      if (i == driver_index) {
+        continue;
+      }
+      const term &candidate = terms[i];
+      if ((candidate.native != nullptr
+           && !candidate.native->contains (entity))
+          || (candidate.das != nullptr
+              && !candidate.das->contains (entity))) {
         return;
       }
     }
@@ -2024,15 +2089,14 @@ each_entity_id_with (const ::das::TArray<uint32_t> &type_ids,
                                                static_cast<uint32_t> (entity));
   };
 
-  const candidate &selected = candidates[candidate_index];
+  const term &selected = terms[driver_index];
   query_depth_guard guard;
   if (selected.native != nullptr) {
     for (entt::entity entity : *selected.native) {
       invoke_if_matching (entity);
     }
   } else {
-    for (const auto &[entity, block] : selected.das->entries) {
-      (void)block;
+    for (entt::entity entity : selected.das->entities ()) {
       invoke_if_matching (entity);
     }
   }
@@ -2468,6 +2532,7 @@ wsl_event_declare_sink (const char *event_name, const char *system_name,
   }
   std::string event_type_name = event_name;
   entt::id_type event_id = resolve_event_type_id (event_name);
+  std::size_t event_size = 0;
   if (event_id == 0) {
     // Script-defined event type: synthesize a name-hashed id (mirrors
     // event_declare_source).
@@ -2476,6 +2541,7 @@ wsl_event_declare_sink (const char *event_name, const char *system_name,
     const auto entry_it = rc->event_hub ().db->entries.find (event_id);
     if (entry_it != rc->event_hub ().db->entries.end ()) {
       event_type_name = entry_it->second.type_name;
+      event_size = entry_it->second.size;
     }
   }
 
@@ -2499,8 +2565,26 @@ wsl_event_declare_sink (const char *event_name, const char *system_name,
     return false;
   }
 
+  std::size_t handler_payload_size = 0;
+  std::uint64_t handler_layout_hash = 0;
+  if (!adapter->event_handler_payload_signature (
+          handler_name, handler_payload_size, handler_layout_hash)) {
+    wsl::log::sys ()->error (
+        "event_declare_sink: handler '{}' must accept one raw-POD struct "
+        "payload",
+        handler_name);
+    return false;
+  }
+  if (event_size != 0 && event_size != handler_payload_size) {
+    wsl::log::sys ()->error (
+        "event_declare_sink: payload size mismatch for '{}' (source {}, sink {})",
+        event_name, event_size, handler_payload_size);
+    return false;
+  }
+
   return adapter->add_script_event_sink (event_id, event_type_name,
-                                         handler_name);
+                                         handler_name, handler_payload_size,
+                                         handler_layout_hash);
 }
 
 /**
@@ -2526,10 +2610,29 @@ wsl_event_emit (::das::Context &, ::das::SimNode_CallBase *call, vec4f *args)
         "event_emit: payload for '{}' must be a structure type", event_name);
     return v_zero ();
   }
+  if (ti->structType == nullptr || !ti->isRawPod ()) {
+    wsl::log::sys ()->error (
+        "event_emit: payload for '{}' must be a hashable raw-POD struct",
+        event_name);
+    return v_zero ();
+  }
 
   const std::size_t payload_size
       = static_cast<std::size_t> (::das::getTypeSize (ti));
+  const std::uint64_t payload_layout_hash
+      = das_struct_layout_hash (ti->structType);
+  if (payload_layout_hash == 0) {
+    wsl::log::sys ()->error (
+        "event_emit: payload layout for '{}' could not be determined",
+        event_name);
+    return v_zero ();
+  }
   const void *data = ::das::cast<void *>::to (args[1]);
+  if (data == nullptr || payload_size == 0) {
+    wsl::log::sys ()->error (
+        "event_emit: payload for '{}' is null or has zero size", event_name);
+    return v_zero ();
+  }
 
   auto &hub = rc->event_hub ();
   if (hub.db == nullptr) {
@@ -2562,7 +2665,15 @@ wsl_event_emit (::das::Context &, ::das::SimNode_CallBase *call, vec4f *args)
     return v_zero ();
   }
 
-  hub.dispatch_by_id (event_id, data);
+  if (it->second.payload_layout_hash == 0) {
+    it->second.payload_layout_hash = payload_layout_hash;
+  } else if (it->second.payload_layout_hash != payload_layout_hash) {
+    wsl::log::sys ()->error (
+        "event_emit: payload layout mismatch for '{}'", event_name);
+    return v_zero ();
+  }
+
+  hub.dispatch_by_id (event_id, data, payload_size, payload_layout_hash);
   return v_zero ();
 }
 
@@ -3260,10 +3371,24 @@ create_worker_weasel_api_module ()
   return new Module_WeaselApi ();
 }
 
-void
+entt::registry *
 wsl_api_set_active_registry (entt::registry *registry)
 {
+  entt::registry *previous = g_registry;
   g_registry = registry;
+  return previous;
+}
+
+int
+wsl_api_get_query_depth () noexcept
+{
+  return g_query_depth;
+}
+
+void
+wsl_api_restore_query_depth (int depth) noexcept
+{
+  g_query_depth = depth;
 }
 
 wsl::event::message_bus *

@@ -52,7 +52,12 @@ void register_wsl_api_module (::das::ModuleGroup &module_group);
 ::das::Module *create_worker_weasel_api_module ();
 
 /** Sets the active registry for the Weasel API module. */
-void wsl_api_set_active_registry (entt::registry *registry);
+entt::registry *wsl_api_set_active_registry (entt::registry *registry);
+
+/** Current query nesting, used to repair state after a daScript longjmp. */
+int wsl_api_get_query_depth () noexcept;
+/** Restores query nesting after daScript bypasses C++ destructors. */
+void wsl_api_restore_query_depth (int depth) noexcept;
 
 /** Returns the message bus of the active runtime context, or nullptr. */
 wsl::event::message_bus *wsl_api_get_active_message_bus ();

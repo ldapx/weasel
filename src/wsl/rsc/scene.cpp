@@ -9,6 +9,7 @@
 #include "wsl/log/log.hpp"
 #include <SDL3/SDL_events.h>
 #include <algorithm>
+#include <unordered_set>
 #include <cstring>
 #include <entt/core/fwd.hpp>
 #include <entt/core/hashed_string.hpp>
@@ -89,6 +90,10 @@ scene::remove_system (sys::ecs_system *system)
     if (m_initialized) {
       (*it)->shutdown (&m_registry);
     }
+    if (m_runtime_ctx != nullptr) {
+      m_runtime_ctx->event_hub ().clear_system_instance (
+          dynamic_cast<void *> (it->get ()));
+    }
     systems.erase (it);
   }
 }
@@ -158,6 +163,10 @@ scene::shutdown_systems ()
     }
 
     sys->shutdown (&m_registry);
+    if (m_runtime_ctx != nullptr) {
+      m_runtime_ctx->event_hub ().clear_system_instance (
+          dynamic_cast<void *> (sys.get ()));
+    }
   }
 }
 
@@ -227,6 +236,85 @@ scene::clear_registry ()
 
   if (m_initialized) {
     refresh_system_states ();
+  }
+}
+
+void
+scene::destroy_entity_subtree (entt::entity root)
+{
+  if (!m_registry.valid (root)) {
+    return;
+  }
+
+  std::vector<entt::entity> pending{ root };
+  std::vector<entt::entity> destruction_order;
+  std::unordered_set<entt::entity> visited;
+
+  while (!pending.empty ()) {
+    const entt::entity current = pending.back ();
+    pending.pop_back ();
+    if (!m_registry.valid (current) || !visited.insert (current).second) {
+      continue;
+    }
+
+    destruction_order.push_back (current);
+    if (!m_registry.all_of<comp::hierarchy> (current)) {
+      continue;
+    }
+
+    entt::entity child = m_registry.get<comp::hierarchy> (current).first;
+    std::unordered_set<entt::entity> sibling_chain;
+    while (child != entt::null && m_registry.valid (child)
+           && sibling_chain.insert (child).second) {
+      const auto *child_hierarchy
+          = m_registry.try_get<comp::hierarchy> (child);
+      if (child_hierarchy == nullptr) {
+        break;
+      }
+      const entt::entity next = child_hierarchy->next;
+      pending.push_back (child);
+      child = next;
+    }
+  }
+
+  for (const entt::entity current : destruction_order) {
+    auto *hierarchy = m_registry.try_get<comp::hierarchy> (current);
+    if (hierarchy == nullptr || !m_registry.valid (hierarchy->parent)
+        || !m_registry.all_of<comp::hierarchy> (hierarchy->parent)) {
+      continue;
+    }
+
+    auto &parent = m_registry.get<comp::hierarchy> (hierarchy->parent);
+    entt::entity previous = entt::null;
+    entt::entity child = parent.first;
+    std::unordered_set<entt::entity> sibling_chain;
+    while (child != entt::null && m_registry.valid (child)
+           && sibling_chain.insert (child).second) {
+      auto *child_hierarchy = m_registry.try_get<comp::hierarchy> (child);
+      if (child_hierarchy == nullptr) {
+        break;
+      }
+      if (child == current) {
+        if (previous == entt::null) {
+          parent.first = child_hierarchy->next;
+        } else if (auto *previous_hierarchy
+                       = m_registry.try_get<comp::hierarchy> (previous)) {
+          previous_hierarchy->next = child_hierarchy->next;
+        }
+        break;
+      }
+      previous = child;
+      child = child_hierarchy->next;
+    }
+  }
+
+  for (auto it = destruction_order.rbegin (); it != destruction_order.rend ();
+       ++it) {
+    if (!m_registry.valid (*it)) {
+      continue;
+    }
+    remove_entity_name (*it);
+    m_registry.destroy (*it);
   }
 }
 
@@ -330,6 +418,11 @@ scene::scene (comp::singl::runtime_context *runtime_ctx,
   ensure_context_bindings ();
 }
 
+scene::~scene ()
+{
+  shutdown_systems ();
+}
+
 scene::scene (scene &&other)
     : m_name (std::move (other.m_name)),
       m_entity_names (std::move (other.m_entity_names)),
@@ -406,6 +499,11 @@ void
 scene::ensure_context_bindings ()
 {
   auto &ctx = m_registry.ctx ();
+
+  if (ctx.contains<scene *> ()) {
+    ctx.erase<scene *> ();
+  }
+  ctx.emplace<scene *> (this);
 
   if (m_runtime_ctx != nullptr) {
     if (ctx.contains<comp::singl::runtime_context *> ()) {

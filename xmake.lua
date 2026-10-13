@@ -631,7 +631,7 @@ package_end()
 -- Third-party packages (xrepo)
 -- ---------------------------------------------------------------------------
 -- Core engine deps — versions mirror CMakeLists.txt where possible
-add_requires("entt 3.15.0")
+add_requires("entt 4.0.0")
 add_requires("glm")
 -- NB: xmake-repo defaults spdlog to header_only=true (a no-op `shared`
 -- build that emits no library), but wsl compiles everything with

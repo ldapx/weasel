@@ -6,6 +6,7 @@
 #include "../serialize/component_adapters.hpp"
 
 #include "detail/registry_helpers.hpp"
+#include "runtime_storage.hpp"
 #include "wsl/log/log.hpp"
 
 #ifndef IN_MODULE_INTERFACE
@@ -16,27 +17,15 @@
 #endif
 
 #ifndef IN_MODULE_INTERFACE
-#include <memory>
-#endif
-#ifndef IN_MODULE_INTERFACE
-#include <optional>
-#endif
-#ifndef IN_MODULE_INTERFACE
 #include <cstddef>
-#endif
-#ifndef IN_MODULE_INTERFACE
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <optional>
 #include <string>
-#endif
-#ifndef IN_MODULE_INTERFACE
 #include <string_view>
-#endif
-#ifndef IN_MODULE_INTERFACE
 #include <type_traits>
-#endif
-#ifndef IN_MODULE_INTERFACE
 #include <unordered_map>
-#endif
-#ifndef IN_MODULE_INTERFACE
 #include <vector>
 #endif
 
@@ -51,59 +40,8 @@ enum class ComponentKind
 {
   /** C++ native component (engine-built, stored in EnTT typed storage). */
   CPP_NATIVE,
-  /** daScript component (no C++ backing type, raw byte storage). */
+  /** daScript component (no C++ backing type, runtime-typed storage). */
   DAS_SCRIPT
-};
-
-/** Scene-local storage for components whose types exist only in Daslang. */
-class das_component_storage
-{
-public:
-  struct default_field
-  {
-    int offset = 0;
-    std::vector<uint8_t> value;
-  };
-
-  struct data_block
-  {
-    std::vector<std::max_align_t> words;
-    std::size_t size = 0;
-
-    uint8_t *
-    data ()
-    {
-      return words.empty () ? nullptr
-                            : reinterpret_cast<uint8_t *> (words.data ());
-    }
-
-    const uint8_t *
-    data () const
-    {
-      return words.empty () ? nullptr
-                            : reinterpret_cast<const uint8_t *> (words.data ());
-    }
-  };
-
-  struct pool
-  {
-    std::size_t size = 0;
-    std::unordered_map<entt::entity, data_block> entries;
-  };
-
-  bool contains (entt::id_type type_id, entt::entity entity) const;
-  bool add (entt::id_type type_id, entt::entity entity, std::size_t size,
-            const std::vector<default_field> &defaults);
-  bool remove (entt::id_type type_id, entt::entity entity);
-  uint8_t *data (entt::id_type type_id, entt::entity entity);
-  const uint8_t *data (entt::id_type type_id, entt::entity entity) const;
-  const pool *find_pool (entt::id_type type_id) const;
-  pool *find_pool (entt::id_type type_id);
-  void clear_entity (entt::entity entity);
-  void clear ();
-
-private:
-  std::unordered_map<entt::id_type, pool> m_pools;
 };
 
 /** Type-erased metadata for a registered component type. */
@@ -140,9 +78,11 @@ struct world_component_registration_options
 /**
  * Central registry for component types in the engine.
  *
- * This class manages the registration of component types, providing
- * metadata and function pointers for generic operations like copying,
- * serialization, and default construction.
+ * Native (C++) components are EnTT typed storages driven by function pointers
+ * held in each descriptor. Daslang components have no C++ type: their blocks
+ * live in the registry-local runtime storage and are described by a layout.
+ * Every component has exactly one identifier, its stable type id, which is the
+ * EnTT type hash of the C++ type.
  */
 class component_registry
 {
@@ -150,9 +90,12 @@ public:
   /** Describes a registered component type. */
   struct descriptor
   {
+    /** One field of a Daslang component. */
+    using das_field = runtime_field;
+
     /** Stable type identifier. */
     entt::id_type type_id{};
-    /** Full type name as provided by the compiler. */
+    /** Full type name as provided by the compiler, or the script name. */
     std::string type_name;
     /** Human-readable name for the component. */
     std::string display_name;
@@ -161,21 +104,22 @@ public:
     /** Whether the component can be default-constructed and added to an entity.
      */
     bool can_add_default = false;
-    /** Whether this is a daslang component (no C++ backing type). */
+    /** Whether this is a daScript component (no C++ backing type). */
     bool is_das_component = false;
-    /** Fields for daslang components. */
-    struct das_field
-    {
-      std::string name;
-      std::string type_name;
-      int offset = 0;
-      int size = 0;
-      wsl::das::das_engine::field_type_kind kind
-          = wsl::das::das_engine::field_type_kind::unsupported;
-      std::vector<uint8_t> default_value;
-    };
+    /**
+     * Whether the component can be stored and persisted. A Daslang component
+     * with fields that hold managed memory (strings, arrays, handles) is
+     * registered for listing but marked unsupported, with the reason in
+     * das_reject_reason.
+     */
+    bool das_supported = true;
+    std::string das_reject_reason;
+    /** Layout of a Daslang component: size, fields and default values. */
+    runtime_layout das_layout;
+    /** Compatibility view used by the CLI, inspector, and cached projects. */
     int das_struct_size = 0;
     std::vector<das_field> das_fields;
+
     /** Checks if the component exists on the given entity. */
     bool (*contains) (entt::registry &, entt::entity) = nullptr;
     /** Emplaces a default instance of the component on the given entity. */
@@ -195,6 +139,7 @@ public:
     void (*save_json) (serialize::json_writer &, entt::registry &) = nullptr;
     /** Loads component data from a JSON reader. */
     void (*load_json) (serialize::json_reader &, entt::registry &) = nullptr;
+
   };
 
   using world_component_descriptor = descriptor;
@@ -210,155 +155,135 @@ public:
                             = {});
 
   /**
-   * Registers metadata for a runtime component without loading its C++
-   * type.
+   * Registers a Daslang component type with its storage layout.
    *
-   * Cached descriptors are only suitable for discovery and name lookup. They do
-   * not provide construction, reflection, copy, or serialization callbacks.
+   * A layout whose fields cannot be stored is still registered so the editor
+   * can list it, but such a component cannot be added (see das_supported).
+   *
+   * :return: \c false when the type id is already used by a different type.
    */
-  void register_cached_runtime_world_component (
+  bool register_runtime_world_component (entt::id_type type_id,
+                                         std::string_view type_name,
+                                         std::string_view display_name,
+                                         runtime_layout layout);
+
+  /** Registers a runtime component from the legacy cache representation. */
+  bool register_cached_runtime_world_component (
       entt::id_type type_id, std::string_view type_name,
       std::string_view display_name, int struct_size = 0,
       std::vector<descriptor::das_field> fields = {});
 
-  /**
-   * Finds a registered world component by stable or internal type ID.
-   * :param type_id: Stable world component ID or internal EnTT type ID.
-   * :return: Matching descriptor, or `nullptr` when not found.
-   */
+  /** Finds a registered world component by stable type identifier. */
   const descriptor *find_world_component (entt::id_type type_id) const;
 
   /**
-   * Finds a registered world component by C++ type name.
-   * :param type_name: Type name returned by reflection.
-   * :return: Matching descriptor, or `nullptr` when not found.
+   * Finds a registered world component by name.
+   *
+   * Tries the full type name, the display name and then the unqualified short
+   * name. A short name shared by several components resolves to nothing.
    */
-  const descriptor *find_world_component (std::string_view type_name) const;
+  const descriptor *find_world_component (std::string_view name) const;
 
-  /**
-   * Returns whether a world component descriptor exists for the ID.
-   * :param type_id: Stable world component ID or internal EnTT type ID.
-   * :return: `true` when the descriptor exists, otherwise `false`.
-   */
+  /** Returns whether a world component descriptor exists for the ID. */
   bool contains_world_component (entt::id_type type_id) const;
 
-  /**
-   * Converts an internal or stable ID to the stable world component ID.
-   * :param type_id: Stable world component ID or internal EnTT type ID.
-   * :return: Stable world component ID when known, otherwise the input ID.
-   */
-  entt::id_type to_stable_world_component_id (entt::id_type type_id) const;
-
-  /**
-   * Returns registered world components in the requested order.
-   * :param order: Requested descriptor ordering.
-   * :return: Ordered descriptor list.
-   */
+  /** Returns registered world components in the requested order. */
   std::vector<const descriptor *>
   get_world_components (world_component_order order
                         = world_component_order::display_name) const;
 
-  /**
-   * Returns the world components that may still be added to an entity.
-   * :param registry: Registry that owns the entity.
-   * :param entity: Entity to test.
-   * :return: Addable world component descriptors for the entity.
-   */
+  /** Returns the world components that may still be added to an entity. */
   std::vector<const descriptor *>
   get_addable_world_components (entt::registry &registry,
                                 entt::entity entity) const;
 
-  /**
-   * Copies a single registered world component from one entity to
-   * another.
-   */
+  /** Copies a single registered native component between entities. */
   bool copy_world_component (entt::registry &src_registry,
                              entt::entity src_entity,
                              entt::registry &dst_registry,
                              entt::entity dst_entity,
                              entt::id_type component_type_id) const;
 
-  /** Saves one registered world component storage to a binary writer. */
+  /** Saves one native component storage to a binary writer. */
   bool save_world_component_binary (serialize::binary_writer &writer,
                                     entt::registry &registry,
                                     entt::id_type component_type_id) const;
 
-  /** Loads one registered world component storage from a binary reader. */
+  /** Loads one native component storage from a binary reader. */
   bool load_world_component_binary (serialize::binary_reader &reader,
                                     entt::registry &registry,
                                     entt::id_type component_type_id) const;
 
-  /** Saves one registered world component storage to a JSON writer. */
+  /** Saves one native component storage to a JSON writer. */
   bool save_world_component_json (serialize::json_writer &writer,
                                   entt::registry &registry,
                                   entt::id_type component_type_id) const;
 
-  /** Loads one registered world component storage from a JSON reader. */
+  /** Loads one native component storage from a JSON reader. */
   bool load_world_component_json (serialize::json_reader &reader,
                                   entt::registry &registry,
                                   entt::id_type component_type_id) const;
 
   /**
-   * Saves all das component data to a JSON writer.
+   * Saves every Daslang component of a registry.
    *
-   * Each das component is serialized as a JSON array of objects with fields:
-   * type_id (uint), entity (uint), data (hex string).
+   * Each component is one document with its type name, stable id, entity and
+   * its fields by name, so saved data survives a change of struct layout.
    */
   void save_das_components_json (serialize::json_writer &writer,
-                                 entt::registry &registry) const;
+                                 const entt::registry &registry) const;
 
   /**
-   * Loads das component data from a JSON reader.
+   * Loads Daslang components written by save_das_components_json.
    *
-   * Expects the same format produced by save_das_components_json.
+   * Fields are matched by name. Documents whose type is not registered, or
+   * whose fields cannot be read, are reported and skipped.
    */
   void load_das_components_json (serialize::json_reader &reader,
                                  entt::registry &registry);
 
-  /**
-   * Saves all das component data to a binary writer (for play/stop snapshots).
-   */
+  /** Binary counterpart of save_das_components_json (play/stop snapshots). */
   void save_das_components_binary (serialize::binary_writer &writer,
-                                   entt::registry &registry) const;
+                                   const entt::registry &registry) const;
 
-  /** Loads das component data from a binary reader (for play/stop snapshots).
-   */
+  /** Binary counterpart of load_das_components_json. */
   void load_das_components_binary (serialize::binary_reader &reader,
                                    entt::registry &registry);
 
-  // ── Das component tracking ──
-
-  /** Checks if a das component is present on an entity. */
-  bool das_component_contains (entt::registry &registry, entt::id_type type_id,
+  /** Checks if a Daslang component is present on an entity. */
+  bool das_component_contains (const entt::registry &registry,
+                               entt::id_type type_id,
                                entt::entity entity) const;
 
-  /** Adds a das component marker to an entity. */
+  /** Adds a Daslang component to an entity, initialised with its defaults. */
   bool das_component_add (entt::registry &registry, entt::id_type type_id,
                           entt::entity entity);
 
-  /** Removes the das component marker from an entity. */
+  /** Removes a Daslang component from an entity. */
   bool das_component_remove (entt::registry &registry, entt::id_type type_id,
                              entt::entity entity);
 
   /**
-   * Returns a mutable pointer to the raw byte storage for a das
-   * component on an entity. Allocates storage if not yet present.
+   * Mutable block of a Daslang component, or nullptr when absent. The pool is
+   * brought up to the current layout first.
    */
   uint8_t *das_component_data (entt::registry &registry, entt::id_type type_id,
                                entt::entity entity);
 
-  /**
-   * Returns a const pointer to the raw byte storage for a das
-   * component on an entity, or nullptr if not present.
-   */
+  /** Read-only block of a Daslang component, or nullptr when absent. */
   const uint8_t *das_component_data (const entt::registry &registry,
                                      entt::id_type type_id,
                                      entt::entity entity) const;
 
-  /** Returns the scene-local pool for query iteration, or nullptr. */
-  const das_component_storage::pool *
-  das_component_pool (const entt::registry &registry,
-                      entt::id_type type_id) const;
+  /**
+   * Pool of a Daslang component type for query iteration, brought up to the
+   * current layout first. Returns nullptr when the registry has no such pool.
+   */
+  runtime_pool *das_component_pool (entt::registry &registry,
+                                    entt::id_type type_id) const;
+
+  /** Re-lays out every Daslang pool of a registry to the current layouts. */
+  void migrate_das_component_pools (entt::registry &registry) const;
 
   /** Clears all Daslang component payloads attached to a registry. */
   void clear_das_component_storage (entt::registry &registry) const;
@@ -370,43 +295,28 @@ public:
   /** Clears descriptors that belong to runtime project code. */
   void clear_runtime_world_components ();
 
-  /**
-   * Finds a component descriptor by its stable type identifier.
-   * :param type_id: The stable type identifier.
-   * :return: Pointer to the descriptor if found, otherwise `nullptr`.
-   */
+  /** Finds a component descriptor by its stable type identifier. */
   const descriptor *
   find (entt::id_type type_id) const
   {
     return find_world_component (type_id);
   }
 
-  /**
-   * Converts an internal entt type identifier to a stable type
-   * identifier.
-   * :param internal_id: The internal type identifier.
-   * :return: The stable type identifier.
-   */
-  entt::id_type
-  to_stable_id (entt::id_type internal_id) const
+  /** EnTT 4 storage keys are the stable type hashes used by descriptors. */
+  [[nodiscard]] entt::id_type
+  to_stable_id (entt::id_type storage_id) const noexcept
   {
-    return to_stable_world_component_id (internal_id);
+    return storage_id;
   }
 
-  /**
-   * Returns all registered descriptors in insertion order.
-   * :return: Vector of pointers to descriptors.
-   */
+  /** Returns all registered descriptors ordered by display name. */
   std::vector<const descriptor *>
   ordered () const
   {
     return get_world_components (world_component_order::display_name);
   }
 
-  /**
-   * Returns all registered descriptors sorted by type identifier.
-   * :return: Vector of pointers to descriptors.
-   */
+  /** Returns all registered descriptors sorted by type identifier. */
   std::vector<const descriptor *>
   by_type_id () const
   {
@@ -420,57 +330,46 @@ public:
     clear_runtime_world_components ();
   }
 
-  // ── Component type lookup table (for generic daScript dispatch) ──
-
   /**
-   * Registers component type info in the lookup table.
-   * :param das_type_name: The daScript-visible type name (e.g. "Transform").
-   * :param type_id: Stable type identifier.
-   * :param kind: Component storage kind.
-   * :param struct_size: Size of the component struct in bytes.
+   * Registers component type info in the name lookup table.
+   * :param das_type_name: The daScript-visible type name, spelled exactly as
+   *   `typeinfo typename` spells it.
    */
   void register_component_type_info (const std::string &das_type_name,
                                      uint64_t type_id, ComponentKind kind,
                                      size_t struct_size);
 
-  /**
-   * Looks up component type info by daScript type name.
-   * :param das_type_name: The daScript-visible type name.
-   * :return: Pointer to the type info, or nullptr if not found.
-   */
+  /** Looks up component type info by its exact daScript type name. */
   const ComponentTypeInfo *
-  find_component_type_info (const std::string &das_type_name) const;
+  find_component_type_info (std::string_view das_type_name) const;
 
-  /**
-   * Looks up component type info by type_id.
-   * :param type_id: The stable type identifier.
-   * :return: Pointer to the type info, or nullptr if not found.
-   */
+  /** Looks up component type info by type_id. */
   const ComponentTypeInfo *
   find_component_type_info_by_id (uint64_t type_id) const;
 
 private:
+  /** Transparent hashing so name lookups never allocate. */
+  struct name_hash
+  {
+    using is_transparent = void;
+
+    std::size_t
+    operator() (std::string_view text) const noexcept
+    {
+      return std::hash<std::string_view>{}(text);
+    }
+  };
+
+  using name_index = std::unordered_map<std::string, entt::id_type, name_hash,
+                                        std::equal_to<>>;
+
   // ------------------------------------------------------------------
-  // Named JSON snapshot wrappers.
-  //
-  // EnTT's entt::snapshot / entt::snapshot_loader write the per-entity,
-  // per-component stream as a flat sequence of unnamed values, which
-  // Cereal's JSON output renders as auto-incremented "value0", "value1",
-  // ... names. The wrappers below reimplement the snapshot protocol for
-  // JSON archives so that the produced JSON is human readable:
-  //
-  //   {
-  //     "count": <number of entries>,
-  //     "entries": [
-  //       { "entity": <entt::entity>, "data": <component T> },
-  //       { "entity": null }              // tombstone (in-place storage)
-  //     ]
-  //   }
-  //
-  // Binary archives keep using EnTT's snapshot directly.
+  // Named JSON and binary wrappers. EnTT's snapshot protocol writes the
+  // per-entity stream as unnamed values; these wrappers keep the stream
+  // readable and positionally aligned between save and load.
   // ------------------------------------------------------------------
 
-  /** JSON save logic for one component type. */
+  /** JSON save logic for one native component type. */
   template <typename T>
   static void
   save_component_json (serialize::json_writer &writer, entt::registry &registry)
@@ -510,7 +409,7 @@ private:
     writer.write (entries);
   }
 
-  /** JSON load logic for one component type. */
+  /** JSON load logic for one native component type. */
   template <typename T>
   static void
   load_component_json (serialize::json_reader &reader, entt::registry &registry)
@@ -533,7 +432,7 @@ private:
     }
   }
 
-  /** Binary save logic for one component type. */
+  /** Binary save logic for one native component type. */
   template <typename T>
   static void
   save_binary_impl (serialize::binary_writer &writer, entt::registry &registry)
@@ -572,7 +471,7 @@ private:
     writer.write (entries);
   }
 
-  /** Binary load logic for one component type. */
+  /** Binary load logic for one native component type. */
   template <typename T>
   static void
   load_binary_impl (serialize::binary_reader &reader, entt::registry &registry)
@@ -595,54 +494,21 @@ private:
     }
   }
 
-  // Internal wrappers previously in rsc::detail. Moved here to avoid an
-  // additional namespace and keep implementation details private to this
-  // class.
-  template <typename T> struct component_binary_wrapper
-  {
-    entt::registry &registry;
-    template <class Archive>
-    void
-    serialize (Archive &ar)
-    {
-      (void)ar;
-      // rfl approach: iterate manually, handled by
-      // desc.save_binary/load_binary
-    }
-  };
-
-  template <typename T> struct component_json_wrapper
-  {
-    entt::registry &registry;
-    template <class Archive>
-    void
-    serialize (Archive &ar)
-    {
-      if constexpr (std::is_same_v<Archive, serialize::json_writer &>) {
-        save_component_json<T> (ar, registry);
-      } else if constexpr (std::is_same_v<Archive, serialize::json_reader &>) {
-        load_component_json<T> (ar, registry);
-      }
-    }
-  };
+  void rebuild_name_index ();
+  runtime_pool *sync_das_pool (entt::registry &registry,
+                               const descriptor &desc) const;
 
   std::unordered_map<entt::id_type, descriptor> m_descriptors;
-  std::unordered_map<entt::id_type, entt::id_type> m_internal_to_stable;
-  std::unordered_map<std::string, entt::id_type> m_type_name_to_stable;
-  std::unordered_map<std::string, entt::id_type> m_display_name_to_stable;
+  name_index m_type_name_to_stable;
+  name_index m_display_name_to_stable;
+  /** Unqualified name → id. A name shared by several components maps to null.
+   */
+  name_index m_short_name_to_stable;
 
-  // Das component tracking: type_id -> set of entities that have it.
-  std::unordered_map<entt::id_type, std::unordered_set<entt::entity>>
-      m_das_component_state;
-
-  // Das component data storage: type_id -> entity -> raw bytes.
-  std::unordered_map<entt::id_type,
-                     std::unordered_map<entt::entity, std::vector<uint8_t>>>
-      m_das_component_data;
-
-  // Component type lookup table: daScript type name -> type info.
-  std::unordered_map<std::string, ComponentTypeInfo> m_type_info_by_name;
-  // Reverse lookup: type_id -> daScript type name.
+  // Component type lookup table: daScript type name → type info.
+  std::unordered_map<std::string, ComponentTypeInfo, name_hash, std::equal_to<>>
+      m_type_info_by_name;
+  // Reverse lookup: type_id → daScript type name.
   std::unordered_map<uint64_t, std::string> m_type_id_to_name;
 };
 
@@ -652,8 +518,12 @@ component_registry::register_world_component (
     const world_component_registration_options &options)
 {
   const entt::id_type type_id = wsl::comp::stable_type_id<T> ();
-  const entt::id_type internal_id = entt::type_id<T> ().hash ();
-  m_internal_to_stable[internal_id] = type_id;
+  if (entt::type_hash<T>::value () != type_id) {
+    wsl::log::sys ()->error (
+        "Component '{}' has an EnTT type hash that differs from its stable id; "
+        "persisted component ids would not match",
+        entt::type_name<T> ().value ());
+  }
 
   wsl::log::sys ()->trace ("Registering component '{}' (id={})",
                            entt::type_name<T> ().value (), type_id);
@@ -664,8 +534,6 @@ component_registry::register_world_component (
   desc.type_id = type_id;
   desc.type_name = std::string (entt::type_name<T> ().value ());
   desc.display_name = detail::resolve_display_name<T> (options.display_name);
-  m_type_name_to_stable[desc.type_name] = type_id;
-  m_display_name_to_stable[desc.display_name] = type_id;
   desc.runtime_registered = options.runtime_registered;
   desc.contains = +[] (entt::registry &registry, entt::entity entity) -> bool {
     return registry.valid (entity) && registry.all_of<T> (entity);
@@ -692,9 +560,6 @@ component_registry::register_world_component (
     (registry.remove<T>)(entity);
     return true;
   };
-
-  wsl::log::sys ()->trace ("Registered component '{}' ({})", desc.display_name,
-                           desc.type_name);
 
   if constexpr (std::is_copy_constructible_v<T>) {
     desc.copy = +[] (entt::registry &src_reg, entt::entity src_ent,
@@ -726,13 +591,22 @@ component_registry::register_world_component (
           component_registry::load_component_json<T> (reader, registry);
         };
 
+  if (const descriptor *existing = find_world_component (type_id)) {
+    if (existing->type_name != desc.type_name) {
+      wsl::log::sys ()->error ("Component id collision between '{}' and '{}'",
+                               existing->type_name, desc.type_name);
+      return;
+    }
+  }
+
   m_descriptors[type_id] = std::move (desc);
+  rebuild_name_index ();
 
   // Also register in the lookup table for generic dispatch.
-  // Use the display name (or type name) as the daScript-visible key.
-  std::string das_name = desc.display_name.empty ()
+  const descriptor &stored = m_descriptors[type_id];
+  std::string das_name = stored.display_name.empty ()
                              ? std::string (entt::type_name<T> ().value ())
-                             : desc.display_name;
+                             : stored.display_name;
   register_component_type_info (das_name, type_id, ComponentKind::CPP_NATIVE,
                                 sizeof (T));
 }

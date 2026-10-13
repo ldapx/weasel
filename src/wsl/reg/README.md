@@ -6,7 +6,7 @@ Central registration system for components, singletons, system factories, and si
 
 | Class | Header | Description |
 |-------|--------|-------------|
-| `component_registry` | `component_registry.hpp` | Registers engine component metadata and scene-local Daslang component pools. |
+| `component_registry` | `component_registry.hpp` | Registers engine component metadata and scene-local Daslang component pools backed by EnTT entity membership. |
 | `singleton_registry` | `singleton_registry.hpp` | Registers singleton (registry-scoped) components with serialize/deserialize support. |
 | `system_factory_registry` | `system_factory_registry.hpp` | Maps system names to factory functions for dynamic instantiation in scenes. |
 | `registry_queries` | `registry_queries.hpp` | Cross-concept query interface — find which systems/iterations/signals relate to a given component or entity. |
@@ -19,7 +19,7 @@ Components are classified into native engine types and Daslang runtime types:
 | Kind | Storage | Description |
 |------|---------|-------------|
 | `CPP_NATIVE` | `entt::registry::storage<T>` | Engine-built C++ components (transform, camera, etc.) |
-| `DAS_SCRIPT` | Scene-local `das_component_storage` in `registry.ctx()` | Daslang-defined components (no C++ backing type) |
+| `DAS_SCRIPT` | EnTT `sparse_set` membership plus a scene-local fixed-page value store in `registry.ctx()` | Daslang-defined components without a generated C++ backing type |
 
 Both kinds are unified through `ComponentTypeInfo`:
 
@@ -55,10 +55,10 @@ wsl::reg::runtime::runtime_project_module rt_module(runtime_ctx);
 // Synchronous compilation and loading
 rt_module.compile_and_load(project);
 
-// Asynchronous reload (non-blocking)
+// Deferred reload; polling performs compilation on the polling thread.
 rt_module.compile_and_load_async(project);
 while (rt_module.is_reloading()) {
-    rt_module.poll_async_reload();  // calls finalize_load() when done
+    rt_module.poll_async_reload();  // compiles and finalizes when polled
 }
 
 // Access the daslang engine for script execution

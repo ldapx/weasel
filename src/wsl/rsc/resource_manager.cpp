@@ -1569,21 +1569,8 @@ rsc::resource_manager::load_project (const std::string &path)
   m_active_project_load = project_load_job{
     .project_data = proj,
     .assets_job = std::async (
-        std::launch::async,
-        [this, proj, has_runtime_code] () {
-          if (has_runtime_code
-              && !m_runtime_ctx->runtime_project_module ()
-                      .has_loaded_module ()) {
-            if (!m_runtime_ctx->runtime_project_module ().compile_and_load (
-                    *proj)) {
-              wsl::log::rsc ()->warn (
-                  "Project runtime module failed to compile/load in "
-                  "background: "
-                  "{}",
-                  m_runtime_ctx->runtime_project_module ().last_status ());
-            }
-          }
-
+      std::launch::async,
+        [this, proj] () {
           return m_project_loader.scan_assets (*proj);
         }),
     .has_runtime_code = has_runtime_code
@@ -1641,7 +1628,18 @@ rsc::resource_manager::update_async_uploads ()
         = m_active_project_load->project_data;
 
     if (m_active_project_load->has_runtime_code) {
-      m_runtime_ctx->runtime_project_module ().finalize_load ();
+      auto &runtime_module = m_runtime_ctx->runtime_project_module ();
+      if (runtime_module.compile_and_load (*proj)) {
+        if (!runtime_module.finalize_load ()) {
+          wsl::log::rsc ()->warn (
+              "Project runtime module failed to register: {}",
+              runtime_module.last_error ());
+        }
+      } else {
+        wsl::log::rsc ()->warn (
+            "Project runtime module failed to compile/load: {}",
+            runtime_module.last_status ());
+      }
     }
 
     clear_all_resources ();

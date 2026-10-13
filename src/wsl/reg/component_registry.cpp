@@ -1,11 +1,17 @@
 #include "component_registry.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
-#include <entt/core/fwd.hpp>
-#include <entt/meta/factory.hpp>
+#include <limits>
+#include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
+
+#include <entt/meta/factory.hpp>
+#include <rfl/Generic.hpp>
+
 #include "../log/log.hpp"
 
 namespace wsl
@@ -17,307 +23,219 @@ namespace reg
 namespace
 {
 
-das_component_storage &
-storage_for (entt::registry &registry)
+using das_kind = wsl::das::das_engine::field_type_kind;
+
+/** Marks a short name shared by more than one component. */
+constexpr entt::id_type ambiguous_name
+    = std::numeric_limits<entt::id_type>::max ();
+
+/**
+ * One Daslang component on the wire. Fields are stored by name, so a change of
+ * struct layout between save and load neither corrupts nor silently drops data
+ * that still has a counterpart.
+ */
+struct das_component_document
 {
-  if (!registry.ctx ().contains<das_component_storage> ()) {
-    registry.ctx ().emplace<das_component_storage> ();
+  std::string type;
+  std::uint32_t type_id = 0;
+  std::uint32_t entity = 0;
+  rfl::Generic fields;
+};
+
+das_component_document
+encode_document (const std::string &type_name, entt::id_type type_id,
+                 entt::entity entity, const runtime_layout &layout,
+                 const std::uint8_t *block)
+{
+  das_component_document doc;
+  doc.type = type_name;
+  doc.type_id = static_cast<std::uint32_t> (type_id);
+  doc.entity = static_cast<std::uint32_t> (entt::to_integral (entity));
+
+  rfl::Generic::Object fields;
+  for (const runtime_field &field : layout.fields) {
+    fields.insert (field.name, encode_runtime_field (field, block));
   }
-  return registry.ctx ().get<das_component_storage> ();
+  doc.fields = rfl::Generic (std::move (fields));
+  return doc;
 }
 
-const das_component_storage *
-try_storage_for (const entt::registry &registry)
+std::vector<das_component_document>
+collect_documents (const component_registry &components,
+                   const entt::registry &registry)
 {
-  if (!registry.ctx ().contains<das_component_storage> ()) {
-    return nullptr;
+  std::vector<das_component_document> docs;
+  const runtime_storage *storage = try_runtime_storage_of (registry);
+  if (storage == nullptr) {
+    return docs;
   }
-  return &registry.ctx ().get<das_component_storage> ();
+
+  for (const component_registry::descriptor *desc :
+       components.get_world_components (world_component_order::type_id)) {
+    if (!desc->is_das_component || !desc->das_supported) {
+      continue;
+    }
+    const runtime_pool *pool = storage->find (desc->type_id);
+    if (pool == nullptr) {
+      continue;
+    }
+    for (entt::entity entity : pool->entities ()) {
+      const std::size_t index = pool->entities ().index (entity);
+      docs.push_back (encode_document (desc->type_name, desc->type_id, entity,
+                                       pool->layout (), pool->block (index)));
+    }
+  }
+  return docs;
+}
+
+void
+apply_documents (const component_registry &components,
+                 const std::vector<das_component_document> &docs,
+                 entt::registry &registry)
+{
+  std::unordered_map<std::string, std::size_t> unknown_types;
+  std::unordered_map<std::string, std::size_t> unsupported_types;
+  std::unordered_map<std::string, std::size_t> bad_values;
+  std::size_t invalid_entities = 0;
+
+  for (const das_component_document &doc : docs) {
+    const component_registry::descriptor *desc
+        = components.find_world_component (std::string_view (doc.type));
+    if (desc == nullptr) {
+      desc = components.find_world_component (
+          static_cast<entt::id_type> (doc.type_id));
+    }
+    if (desc == nullptr || !desc->is_das_component) {
+      ++unknown_types[doc.type];
+      continue;
+    }
+    if (!desc->das_supported) {
+      ++unsupported_types[doc.type];
+      continue;
+    }
+
+    const auto entity = static_cast<entt::entity> (doc.entity);
+    if (!registry.valid (entity)) {
+      ++invalid_entities;
+      continue;
+    }
+
+    runtime_pool &pool = runtime_storage_of (registry).acquire (
+        desc->type_id, desc->das_layout);
+    if (!pool.contains (entity)) {
+      pool.add (entity);
+    }
+    std::uint8_t *block = pool.data (entity);
+
+    const auto *fields
+        = std::get_if<rfl::Generic::Object> (&doc.fields.value ());
+    if (fields == nullptr) {
+      ++bad_values[doc.type];
+      continue;
+    }
+    for (const auto &[name, value] : *fields) {
+      const runtime_field *field = find_runtime_field (pool.layout (), name);
+      if (field == nullptr) {
+        continue; // Field removed from the script since the save.
+      }
+      if (!decode_runtime_field (*field, value, block)) {
+        ++bad_values[doc.type];
+      }
+    }
+  }
+
+  for (const auto &[type, count] : unknown_types) {
+    wsl::log::rsc ()->warn (
+        "Daslang component '{}' is not registered; {} instance(s) were not "
+        "loaded",
+        type, count);
+  }
+  for (const auto &[type, count] : unsupported_types) {
+    wsl::log::rsc ()->warn (
+        "Daslang component '{}' cannot be stored; {} instance(s) were not "
+        "loaded",
+        type, count);
+  }
+  for (const auto &[type, count] : bad_values) {
+    wsl::log::rsc ()->warn ("Daslang component '{}': {} field value(s) did "
+                            "not match the struct and kept their defaults",
+                            type, count);
+  }
+  if (invalid_entities > 0) {
+    wsl::log::rsc ()->warn (
+        "{} Daslang component(s) referenced entities that do not exist",
+        invalid_entities);
+  }
 }
 
 } // namespace
 
-bool
-das_component_storage::contains (entt::id_type type_id,
-                                 entt::entity entity) const
+// ── Name index ──
+
+void
+component_registry::rebuild_name_index ()
 {
-  const pool *component_pool = find_pool (type_id);
-  return component_pool != nullptr
-         && component_pool->entries.find (entity)
-                != component_pool->entries.end ();
-}
+  m_type_name_to_stable.clear ();
+  m_display_name_to_stable.clear ();
+  m_short_name_to_stable.clear ();
 
-bool
-das_component_storage::add (entt::id_type type_id, entt::entity entity,
-                            std::size_t size,
-                            const std::vector<default_field> &defaults)
-{
-  pool &component_pool = m_pools[type_id];
-  if (component_pool.size != 0 && component_pool.size != size) {
-    return false;
-  }
-  component_pool.size = size;
+  const auto insert_unique = [] (auto &index, const std::string &name,
+                                 entt::id_type id) {
+    auto [it, inserted] = index.try_emplace (name, id);
+    if (!inserted && it->second != id) {
+      it->second = ambiguous_name;
+    }
+  };
 
-  auto [it, inserted] = component_pool.entries.try_emplace (entity);
-  if (!inserted) {
-    return false;
-  }
+  for (const auto &[id, desc] : m_descriptors) {
+    if (!desc.type_name.empty ()) {
+      insert_unique (m_type_name_to_stable, desc.type_name, id);
+    }
+    if (!desc.display_name.empty ()) {
+      insert_unique (m_display_name_to_stable, desc.display_name, id);
+    }
 
-  data_block &block = it->second;
-  block.size = size;
-  const std::size_t word_count
-      = (size + sizeof (std::max_align_t) - 1) / sizeof (std::max_align_t);
-  block.words.resize (word_count);
-  if (size > 0) {
-    std::memset (block.data (), 0, size);
-  }
-
-  for (const default_field &field : defaults) {
-    if (field.offset < 0 || field.value.empty ()) {
+    const std::string_view full = desc.type_name;
+    const std::size_t pos = full.rfind ("::");
+    const std::string_view short_name
+        = pos == std::string_view::npos ? full : full.substr (pos + 2);
+    if (short_name.empty ()) {
       continue;
     }
-    const std::size_t offset = static_cast<std::size_t> (field.offset);
-    if (offset > size || field.value.size () > size - offset) {
-      continue;
+    auto [it, inserted]
+        = m_short_name_to_stable.try_emplace (std::string (short_name), id);
+    if (!inserted && it->second != id) {
+      it->second = ambiguous_name;
     }
-    std::memcpy (block.data () + offset, field.value.data (),
-                 field.value.size ());
-  }
-
-  return true;
-}
-
-bool
-das_component_storage::remove (entt::id_type type_id, entt::entity entity)
-{
-  pool *component_pool = find_pool (type_id);
-  return component_pool != nullptr
-         && component_pool->entries.erase (entity) != 0;
-}
-
-uint8_t *
-das_component_storage::data (entt::id_type type_id, entt::entity entity)
-{
-  pool *component_pool = find_pool (type_id);
-  if (component_pool == nullptr) {
-    return nullptr;
-  }
-  auto it = component_pool->entries.find (entity);
-  return it == component_pool->entries.end () ? nullptr : it->second.data ();
-}
-
-const uint8_t *
-das_component_storage::data (entt::id_type type_id, entt::entity entity) const
-{
-  const pool *component_pool = find_pool (type_id);
-  if (component_pool == nullptr) {
-    return nullptr;
-  }
-  auto it = component_pool->entries.find (entity);
-  return it == component_pool->entries.end () ? nullptr : it->second.data ();
-}
-
-const das_component_storage::pool *
-das_component_storage::find_pool (entt::id_type type_id) const
-{
-  auto it = m_pools.find (type_id);
-  return it == m_pools.end () ? nullptr : &it->second;
-}
-
-das_component_storage::pool *
-das_component_storage::find_pool (entt::id_type type_id)
-{
-  auto it = m_pools.find (type_id);
-  return it == m_pools.end () ? nullptr : &it->second;
-}
-
-void
-das_component_storage::clear_entity (entt::entity entity)
-{
-  for (auto &[type_id, component_pool] : m_pools) {
-    (void)type_id;
-    component_pool.entries.erase (entity);
   }
 }
 
-void
-das_component_storage::clear ()
-{
-  m_pools.clear ();
-}
-
-void
-component_registry::register_cached_runtime_world_component (
-    entt::id_type type_id, std::string_view type_name,
-    std::string_view display_name, int struct_size,
-    std::vector<descriptor::das_field> fields)
-{
-  descriptor desc{};
-  desc.type_id = type_id;
-  desc.type_name = std::string (type_name);
-  desc.display_name = display_name.empty ()
-                          ? comp::humanize_identifier (type_name)
-                          : std::string (display_name);
-  desc.runtime_registered = true;
-  desc.can_add_default = true;
-  desc.is_das_component = true;
-  desc.das_struct_size = struct_size;
-  desc.das_fields = std::move (fields);
-
-  // Daslang components live in a separate type-erased storage, so the generic
-  // descriptor operations have to forward to das_component_add() /
-  // das_component_remove(), which need the owning component_registry. The
-  // descriptor callbacks are plain function pointers with no user data, so they
-  // cannot be bound here; they stay null and callers must check
-  // is_das_component and use the das_component_* helpers directly (see
-  // weasel-cli's `comp add` / `comp rm`).
-  m_type_name_to_stable[desc.type_name] = type_id;
-  m_display_name_to_stable[desc.display_name] = type_id;
-  m_descriptors[type_id] = std::move (desc);
-}
-
-bool
-component_registry::das_component_contains (entt::registry &registry,
-                                            entt::id_type type_id,
-                                            entt::entity entity) const
-{
-  const das_component_storage *storage = try_storage_for (registry);
-  return storage != nullptr && storage->contains (type_id, entity);
-}
-
-bool
-component_registry::das_component_add (entt::registry &registry,
-                                       entt::id_type type_id,
-                                       entt::entity entity)
-{
-  if (das_component_contains (registry, type_id, entity)) {
-    return false;
-  }
-
-  // Allocate storage for the component data, applying default values
-  // from the daScript struct definition when available.
-  const auto *desc = find_world_component (type_id);
-  if (desc == nullptr || desc->das_struct_size <= 0) {
-    return false;
-  }
-
-  std::vector<das_component_storage::default_field> defaults;
-  defaults.reserve (desc->das_fields.size ());
-  for (const auto &field : desc->das_fields) {
-    defaults.push_back ({ field.offset, field.default_value });
-  }
-  return storage_for (registry).add (
-      type_id, entity, static_cast<std::size_t> (desc->das_struct_size),
-      defaults);
-}
-
-bool
-component_registry::das_component_remove (entt::registry &registry,
-                                          entt::id_type type_id,
-                                          entt::entity entity)
-{
-  das_component_storage *storage
-      = registry.ctx ().contains<das_component_storage> ()
-            ? &registry.ctx ().get<das_component_storage> ()
-            : nullptr;
-  return storage != nullptr && storage->remove (type_id, entity);
-}
-
-uint8_t *
-component_registry::das_component_data (entt::registry &registry,
-                                        entt::id_type type_id,
-                                        entt::entity entity)
-{
-  if (!registry.ctx ().contains<das_component_storage> ()) {
-    return nullptr;
-  }
-  return registry.ctx ().get<das_component_storage> ().data (type_id, entity);
-}
-
-const uint8_t *
-component_registry::das_component_data (const entt::registry &registry,
-                                        entt::id_type type_id,
-                                        entt::entity entity) const
-{
-  const das_component_storage *storage = try_storage_for (registry);
-  return storage == nullptr ? nullptr : storage->data (type_id, entity);
-}
-
-const das_component_storage::pool *
-component_registry::das_component_pool (const entt::registry &registry,
-                                        entt::id_type type_id) const
-{
-  const das_component_storage *storage = try_storage_for (registry);
-  return storage == nullptr ? nullptr : storage->find_pool (type_id);
-}
-
-void
-component_registry::clear_das_component_storage (entt::registry &registry) const
-{
-  if (registry.ctx ().contains<das_component_storage> ()) {
-    registry.ctx ().get<das_component_storage> ().clear ();
-  }
-}
-
-void
-component_registry::clear_das_component_entity (entt::registry &registry,
-                                                entt::entity entity) const
-{
-  if (registry.ctx ().contains<das_component_storage> ()) {
-    registry.ctx ().get<das_component_storage> ().clear_entity (entity);
-  }
-}
+// ── Lookup ──
 
 const component_registry::descriptor *
 component_registry::find_world_component (entt::id_type type_id) const
 {
-  if (std::unordered_map<entt::id_type, descriptor>::const_iterator const it
-      = m_descriptors.find (type_id);
-      it != m_descriptors.end ()) {
+  if (auto it = m_descriptors.find (type_id); it != m_descriptors.end ()) {
     return &it->second;
   }
-
-  if (std::unordered_map<entt::id_type, entt::id_type>::const_iterator const it
-      = m_internal_to_stable.find (type_id);
-      it != m_internal_to_stable.end ()) {
-    if (std::unordered_map<entt::id_type, descriptor>::const_iterator const
-            stable_it = m_descriptors.find (it->second);
-        stable_it != m_descriptors.end ()) {
-      return &stable_it->second;
-    }
-  }
-
   return nullptr;
 }
 
 const component_registry::descriptor *
-component_registry::find_world_component (std::string_view type_name) const
+component_registry::find_world_component (std::string_view name) const
 {
-  // 1. Exact C++ type name (e.g. "wsl::comp::transform")
-  if (std::unordered_map<std::string, entt::id_type>::const_iterator const it
-      = m_type_name_to_stable.find (std::string (type_name));
-      it != m_type_name_to_stable.end ()) {
+  if (auto it = m_type_name_to_stable.find (name);
+      it != m_type_name_to_stable.end () && it->second != ambiguous_name) {
     return find_world_component (it->second);
   }
-
-  // 2. Display name (e.g. "Transform", "Rigid Body")
-  if (std::unordered_map<std::string, entt::id_type>::const_iterator const dit
-      = m_display_name_to_stable.find (std::string (type_name));
-      dit != m_display_name_to_stable.end ()) {
-    return find_world_component (dit->second);
+  if (auto it = m_display_name_to_stable.find (name);
+      it != m_display_name_to_stable.end () && it->second != ambiguous_name) {
+    return find_world_component (it->second);
   }
-
-  // 3. Short name — last segment after "::" (e.g. "transform", "rigid_body")
-  for (const auto &entry : m_descriptors) {
-    std::string_view const full = entry.second.type_name;
-    std::size_t const pos = full.rfind ("::");
-    std::string_view const short_name
-        = (pos != std::string_view::npos) ? full.substr (pos + 2) : full;
-    if (short_name == type_name) {
-      return &entry.second;
-    }
+  if (auto it = m_short_name_to_stable.find (name);
+      it != m_short_name_to_stable.end () && it->second != ambiguous_name) {
+    return find_world_component (it->second);
   }
-
   return nullptr;
 }
 
@@ -325,18 +243,6 @@ bool
 component_registry::contains_world_component (entt::id_type type_id) const
 {
   return find_world_component (type_id) != nullptr;
-}
-
-entt::id_type
-component_registry::to_stable_world_component_id (entt::id_type type_id) const
-{
-  if (std::unordered_map<entt::id_type, entt::id_type>::const_iterator const it
-      = m_internal_to_stable.find (type_id);
-      it != m_internal_to_stable.end ()) {
-    return it->second;
-  }
-
-  return type_id;
 }
 
 std::vector<const component_registry::descriptor *>
@@ -368,8 +274,14 @@ component_registry::get_addable_world_components (entt::registry &registry,
   }
 
   for (const descriptor *desc : get_world_components ()) {
-    if ((desc == nullptr) || !desc->can_add_default
-        || (desc->contains == nullptr) || desc->contains (registry, entity)) {
+    if (desc == nullptr || !desc->can_add_default) {
+      continue;
+    }
+    if (desc->is_das_component) {
+      if (das_component_contains (registry, desc->type_id, entity)) {
+        continue;
+      }
+    } else if (desc->contains == nullptr || desc->contains (registry, entity)) {
       continue;
     }
 
@@ -378,6 +290,8 @@ component_registry::get_addable_world_components (entt::registry &registry,
 
   return out;
 }
+
+// ── Native components ──
 
 bool
 component_registry::copy_world_component (entt::registry &src_registry,
@@ -455,244 +369,266 @@ component_registry::load_world_component_json (
   return true;
 }
 
-namespace
+// ── Daslang components: registration ──
+
+bool
+component_registry::register_runtime_world_component (
+    entt::id_type type_id, std::string_view type_name,
+    std::string_view display_name, runtime_layout layout)
 {
-
-std::string
-bytes_to_hex (const uint8_t *bytes, std::size_t size)
-{
-  static constexpr char hex_chars[] = "0123456789abcdef";
-  std::string result;
-  result.reserve (size * 2);
-  for (std::size_t i = 0; i < size; ++i) {
-    const uint8_t byte = bytes[i];
-    result.push_back (hex_chars[byte >> 4]);
-    result.push_back (hex_chars[byte & 0x0F]);
-  }
-  return result;
-}
-
-std::vector<uint8_t>
-hex_to_bytes (const std::string &hex)
-{
-  std::vector<uint8_t> result;
-  result.reserve (hex.size () / 2);
-  for (std::size_t i = 0; i + 1 < hex.size (); i += 2) {
-    auto hi = static_cast<uint8_t> (hex[i]);
-    auto lo = static_cast<uint8_t> (hex[i + 1]);
-    auto nibble = [] (uint8_t c) -> uint8_t {
-      if (c >= '0' && c <= '9')
-        return static_cast<uint8_t> (c - '0');
-      if (c >= 'a' && c <= 'f')
-        return static_cast<uint8_t> (c - 'a' + 10);
-      if (c >= 'A' && c <= 'F')
-        return static_cast<uint8_t> (c - 'A' + 10);
-      return 0;
-    };
-    result.push_back (static_cast<uint8_t> ((nibble (hi) << 4) | nibble (lo)));
-  }
-  return result;
-}
-
-} // namespace
-
-void
-component_registry::save_das_components_json (serialize::json_writer &writer,
-                                              entt::registry &registry) const
-{
-  struct das_entry
-  {
-    uint32_t type_id;
-    uint32_t entity;
-    std::string data_hex;
-  };
-  std::vector<das_entry> entries;
-
-  const das_component_storage *storage = try_storage_for (registry);
-  if (storage != nullptr) {
-    for (const auto *desc :
-         get_world_components (world_component_order::type_id)) {
-      if (desc == nullptr || !desc->is_das_component) {
-        continue;
-      }
-      const auto *component_pool = storage->find_pool (desc->type_id);
-      if (component_pool == nullptr) {
-        continue;
-      }
-      for (const auto &[entity, block] : component_pool->entries) {
-        entries.push_back ({ static_cast<uint32_t> (desc->type_id),
-                             static_cast<uint32_t> (entt::to_integral (entity)),
-                             bytes_to_hex (block.data (), block.size) });
-      }
+  if (const descriptor *existing = find_world_component (type_id)) {
+    if (!existing->is_das_component || existing->type_name != type_name) {
+      wsl::log::xmake ()->error (
+          "Daslang component id collision: '{}' and '{}' both hash to {}",
+          existing->type_name, type_name, type_id);
+      return false;
     }
   }
 
-  writer.write (entries);
+  descriptor desc{};
+  desc.type_id = type_id;
+  desc.type_name = std::string (type_name);
+  desc.display_name = display_name.empty ()
+                          ? comp::humanize_identifier (type_name)
+                          : std::string (display_name);
+  desc.runtime_registered = true;
+  desc.is_das_component = true;
+  desc.das_layout = std::move (layout);
+  desc.das_struct_size = static_cast<int> (desc.das_layout.size);
+  desc.das_fields = desc.das_layout.fields;
+
+  const std::string reason = desc.das_layout.validation_error ();
+  desc.das_supported = reason.empty ();
+  desc.das_reject_reason = reason;
+  desc.can_add_default = desc.das_supported;
+
+  if (!desc.das_supported) {
+    wsl::log::xmake ()->error ("Daslang component '{}' is not usable: {}",
+                               type_name, reason);
+  }
+
+  const std::uint64_t size = desc.das_layout.size;
+  m_descriptors[type_id] = std::move (desc);
+  rebuild_name_index ();
+  register_component_type_info (std::string (type_name), type_id,
+                                ComponentKind::DAS_SCRIPT,
+                                static_cast<size_t> (size));
+  return true;
+}
+
+bool
+component_registry::register_cached_runtime_world_component (
+    entt::id_type type_id, std::string_view type_name,
+    std::string_view display_name, int struct_size,
+    std::vector<descriptor::das_field> fields)
+{
+  const auto size = struct_size > 0 ? static_cast<std::uint32_t> (struct_size)
+                                    : 0U;
+  auto layout = runtime_layout::make (size, std::move (fields));
+  return register_runtime_world_component (type_id, type_name, display_name,
+                                           std::move (layout));
+}
+
+void
+component_registry::clear_runtime_world_components ()
+{
+  std::unordered_set<entt::id_type> runtime_ids;
+  for (const auto &[id, desc] : m_descriptors) {
+    if (desc.runtime_registered) {
+      runtime_ids.insert (id);
+    }
+  }
+
+  for (entt::id_type id : runtime_ids) {
+    entt::meta_reset (id);
+    m_descriptors.erase (id);
+  }
+
+  for (auto it = m_type_info_by_name.begin ();
+       it != m_type_info_by_name.end ();) {
+    if (runtime_ids.contains (
+            static_cast<entt::id_type> (it->second.type_id))) {
+      m_type_id_to_name.erase (it->second.type_id);
+      it = m_type_info_by_name.erase (it);
+    } else {
+      ++it;
+    }
+  }
+
+  rebuild_name_index ();
+}
+
+// ── Daslang components: storage ──
+
+runtime_pool *
+component_registry::sync_das_pool (entt::registry &registry,
+                                   const descriptor &desc) const
+{
+  runtime_storage *storage = try_runtime_storage_of (registry);
+  if (storage == nullptr) {
+    return nullptr;
+  }
+  runtime_pool *pool = storage->find (desc.type_id);
+  if (pool != nullptr) {
+    sync_pool_layout (*pool, desc.das_layout);
+  }
+  return pool;
+}
+
+bool
+component_registry::das_component_contains (const entt::registry &registry,
+                                            entt::id_type type_id,
+                                            entt::entity entity) const
+{
+  const runtime_storage *storage = try_runtime_storage_of (registry);
+  if (storage == nullptr) {
+    return false;
+  }
+  const runtime_pool *pool = storage->find (type_id);
+  return pool != nullptr && pool->contains (entity);
+}
+
+bool
+component_registry::das_component_add (entt::registry &registry,
+                                       entt::id_type type_id,
+                                       entt::entity entity)
+{
+  const descriptor *desc = find_world_component (type_id);
+  if (desc == nullptr || !desc->is_das_component || !desc->das_supported
+      || desc->das_layout.size == 0) {
+    return false;
+  }
+
+  runtime_pool &pool
+      = runtime_storage_of (registry).acquire (type_id, desc->das_layout);
+  return pool.add (entity);
+}
+
+bool
+component_registry::das_component_remove (entt::registry &registry,
+                                          entt::id_type type_id,
+                                          entt::entity entity)
+{
+  runtime_storage *storage = try_runtime_storage_of (registry);
+  if (storage == nullptr) {
+    return false;
+  }
+  runtime_pool *pool = storage->find (type_id);
+  return pool != nullptr && pool->remove (entity);
+}
+
+uint8_t *
+component_registry::das_component_data (entt::registry &registry,
+                                        entt::id_type type_id,
+                                        entt::entity entity)
+{
+  const descriptor *desc = find_world_component (type_id);
+  if (desc == nullptr) {
+    return nullptr;
+  }
+  runtime_pool *pool = sync_das_pool (registry, *desc);
+  return pool == nullptr ? nullptr : pool->data (entity);
+}
+
+const uint8_t *
+component_registry::das_component_data (const entt::registry &registry,
+                                        entt::id_type type_id,
+                                        entt::entity entity) const
+{
+  const runtime_storage *storage = try_runtime_storage_of (registry);
+  if (storage == nullptr) {
+    return nullptr;
+  }
+  const runtime_pool *pool = storage->find (type_id);
+  return pool == nullptr ? nullptr : pool->data (entity);
+}
+
+runtime_pool *
+component_registry::das_component_pool (entt::registry &registry,
+                                        entt::id_type type_id) const
+{
+  const descriptor *desc = find_world_component (type_id);
+  if (desc == nullptr || !desc->is_das_component) {
+    return nullptr;
+  }
+  return sync_das_pool (registry, *desc);
+}
+
+void
+component_registry::migrate_das_component_pools (entt::registry &registry) const
+{
+  runtime_storage *storage = try_runtime_storage_of (registry);
+  if (storage == nullptr) {
+    return;
+  }
+  storage->for_each_pool ([this] (entt::id_type type_id, runtime_pool &pool) {
+    const descriptor *desc = find_world_component (type_id);
+    if (desc != nullptr && desc->is_das_component && desc->das_supported) {
+      sync_pool_layout (pool, desc->das_layout);
+    }
+  });
+}
+
+void
+component_registry::clear_das_component_storage (entt::registry &registry) const
+{
+  if (runtime_storage *storage = try_runtime_storage_of (registry)) {
+    storage->clear ();
+  }
+}
+
+void
+component_registry::clear_das_component_entity (entt::registry &registry,
+                                                entt::entity entity) const
+{
+  if (runtime_storage *storage = try_runtime_storage_of (registry)) {
+    storage->remove_entity (entity);
+  }
+}
+
+// ── Daslang components: persistence ──
+
+void
+component_registry::save_das_components_json (
+    serialize::json_writer &writer, const entt::registry &registry) const
+{
+  writer.write (collect_documents (*this, registry));
 }
 
 void
 component_registry::load_das_components_json (serialize::json_reader &reader,
                                               entt::registry &registry)
 {
-  struct das_entry
-  {
-    uint32_t type_id;
-    uint32_t entity;
-    std::string data_hex;
-  };
-  std::vector<das_entry> entries;
-  reader.read (entries);
-
-  for (auto &e : entries) {
-    auto tid = static_cast<entt::id_type> (e.type_id);
-    auto entity = static_cast<entt::entity> (e.entity);
-
-    if (!contains_world_component (tid)) {
-      register_cached_runtime_world_component (tid, "unknown", "unknown");
-    }
-    if (!das_component_contains (registry, tid, entity)) {
-      das_component_add (registry, tid, entity);
-    }
-
-    std::vector<uint8_t> data = hex_to_bytes (e.data_hex);
-    uint8_t *dest = das_component_data (registry, tid, entity);
-    if (dest) {
-      const descriptor *desc = find_world_component (tid);
-      std::size_t copy_size
-          = desc ? static_cast<std::size_t> (desc->das_struct_size)
-                 : data.size ();
-      copy_size = std::min (copy_size, data.size ());
-      std::memcpy (dest, data.data (), copy_size);
-    }
+  std::vector<das_component_document> docs;
+  std::string error;
+  if (!reader.read (docs, &error)) {
+    wsl::log::rsc ()->warn ("Daslang components could not be read: {}", error);
+    return;
   }
+  apply_documents (*this, docs, registry);
 }
 
 void
 component_registry::save_das_components_binary (
-    serialize::binary_writer &writer, entt::registry &registry) const
+    serialize::binary_writer &writer, const entt::registry &registry) const
 {
-  struct das_binary_entry
-  {
-    uint32_t type_id;
-    uint32_t entity;
-    uint32_t data_size;
-    std::vector<uint8_t> data;
-  };
-  std::vector<das_binary_entry> entries;
-
-  const das_component_storage *storage = try_storage_for (registry);
-  if (storage != nullptr) {
-    for (const auto *desc :
-         get_world_components (world_component_order::type_id)) {
-      if (desc == nullptr || !desc->is_das_component) {
-        continue;
-      }
-      if (const auto *component_pool = storage->find_pool (desc->type_id)) {
-        for (const auto &[entity, block] : component_pool->entries) {
-          entries.push_back (
-              { static_cast<uint32_t> (desc->type_id),
-                static_cast<uint32_t> (entt::to_integral (entity)),
-                static_cast<uint32_t> (block.size),
-                std::vector<uint8_t> (block.data (),
-                                      block.data () + block.size) });
-        }
-      }
-    }
-  }
-
-  writer.write (entries);
+  writer.write (collect_documents (*this, registry));
 }
 
 void
 component_registry::load_das_components_binary (
     serialize::binary_reader &reader, entt::registry &registry)
 {
-  struct das_binary_entry
-  {
-    uint32_t type_id;
-    uint32_t entity;
-    uint32_t data_size;
-    std::vector<uint8_t> data;
-  };
-  std::vector<das_binary_entry> entries;
-  reader.read (entries);
-
-  for (auto &e : entries) {
-    auto tid = static_cast<entt::id_type> (e.type_id);
-    auto entity = static_cast<entt::entity> (e.entity);
-
-    if (!contains_world_component (tid)) {
-      register_cached_runtime_world_component (tid, "unknown", "unknown");
-    }
-    if (!das_component_contains (registry, tid, entity)) {
-      das_component_add (registry, tid, entity);
-    }
-
-    uint8_t *dest = das_component_data (registry, tid, entity);
-    if (dest && e.data_size > 0) {
-      const descriptor *desc = find_world_component (tid);
-      std::size_t copy_size
-          = desc ? static_cast<std::size_t> (desc->das_struct_size)
-                 : e.data.size ();
-      copy_size = std::min (copy_size, e.data.size ());
-      std::memcpy (dest, e.data.data (), copy_size);
-    }
+  std::vector<das_component_document> docs;
+  std::string error;
+  if (!reader.read (docs, &error)) {
+    wsl::log::rsc ()->warn ("Daslang components could not be read: {}", error);
+    return;
   }
+  apply_documents (*this, docs, registry);
 }
 
-void
-component_registry::clear_runtime_world_components ()
-{
-  std::vector<entt::id_type> runtime_ids;
-  std::vector<entt::id_type> runtime_internal_ids;
-  runtime_ids.reserve (m_descriptors.size ());
-
-  for (const auto &entry : m_descriptors) {
-    if (entry.second.runtime_registered) {
-      runtime_ids.push_back (entry.first);
-    }
-  }
-
-  for (const auto &entry : m_internal_to_stable) {
-    if (auto it = m_descriptors.find (entry.second);
-        it != m_descriptors.end () && it->second.runtime_registered) {
-      runtime_internal_ids.push_back (entry.first);
-    }
-  }
-
-  for (entt::id_type const type_id : runtime_ids) {
-    entt::meta_reset (type_id);
-    if (std::unordered_map<entt::id_type, descriptor>::const_iterator const it
-        = m_descriptors.find (type_id);
-        it != m_descriptors.end ()) {
-      m_type_name_to_stable.erase (it->second.type_name);
-      m_display_name_to_stable.erase (it->second.display_name);
-    }
-    m_descriptors.erase (type_id);
-  }
-
-  for (entt::id_type const internal_id : runtime_internal_ids) {
-    m_internal_to_stable.erase (internal_id);
-  }
-
-  // Also clear the lookup table entries for runtime components.
-  for (auto it = m_type_info_by_name.begin ();
-       it != m_type_info_by_name.end ();) {
-    if (auto id_it = m_type_id_to_name.find (it->second.type_id);
-        id_it != m_type_id_to_name.end ()) {
-      if (auto desc_it = m_descriptors.find (it->second.type_id);
-          desc_it != m_descriptors.end ()
-          && desc_it->second.runtime_registered) {
-        it = m_type_info_by_name.erase (it);
-        m_type_id_to_name.erase (id_it);
-        continue;
-      }
-    }
-    ++it;
-  }
-}
-
-// ── Component type lookup table ──
+// ── Type info table ──
 
 void
 component_registry::register_component_type_info (
@@ -707,39 +643,20 @@ component_registry::register_component_type_info (
 
 const ComponentTypeInfo *
 component_registry::find_component_type_info (
-    const std::string &das_type_name) const
+    std::string_view das_type_name) const
 {
-  auto it = m_type_info_by_name.find (das_type_name);
-  if (it != m_type_info_by_name.end ()) {
+  if (auto it = m_type_info_by_name.find (das_type_name);
+      it != m_type_info_by_name.end ()) {
     return &it->second;
   }
-
-  std::string normalized = das_type_name;
-  if (normalized.ends_with (" const")) {
-    normalized.resize (normalized.size () - 6);
-    it = m_type_info_by_name.find (normalized);
-    if (it != m_type_info_by_name.end ()) {
-      return &it->second;
-    }
-  }
-
-  const std::size_t separator = normalized.rfind ("::");
-  if (separator != std::string::npos) {
-    normalized.erase (0, separator + 2);
-    it = m_type_info_by_name.find (normalized);
-    if (it != m_type_info_by_name.end ()) {
-      return &it->second;
-    }
-  }
-
   return nullptr;
 }
 
 const ComponentTypeInfo *
 component_registry::find_component_type_info_by_id (uint64_t type_id) const
 {
-  auto it = m_type_id_to_name.find (type_id);
-  if (it != m_type_id_to_name.end ()) {
+  if (auto it = m_type_id_to_name.find (type_id);
+      it != m_type_id_to_name.end ()) {
     return find_component_type_info (it->second);
   }
   return nullptr;

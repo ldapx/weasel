@@ -1,5 +1,7 @@
 #include "singleton_registry.hpp"
 
+#include "runtime_storage.hpp"
+
 #include "../rsc/scene.hpp"
 #include "../rsc/world.hpp"
 
@@ -9,6 +11,7 @@
 #include <entt/entity/fwd.hpp>
 #include <entt/meta/factory.hpp>
 #include <memory>
+#include <rfl/json.hpp>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -21,6 +24,9 @@ namespace reg
 
 namespace
 {
+
+constexpr ::entt::id_type ambiguous_singleton_name
+    = static_cast<::entt::id_type> (-1);
 
 das_singleton_storage &
 storage_for (::entt::registry &registry)
@@ -40,6 +46,32 @@ try_storage_for (const ::entt::registry &registry)
   return &registry.ctx ().get<das_singleton_storage> ();
 }
 
+das_singleton_storage *
+try_storage_for (::entt::registry &registry)
+{
+  if (!registry.ctx ().contains<das_singleton_storage> ()) {
+    return nullptr;
+  }
+  return &registry.ctx ().get<das_singleton_storage> ();
+}
+
+std::string
+block_to_hex (const das_singleton_storage::block *block)
+{
+  if ((block == nullptr) || (block->data () == nullptr) || (block->size == 0)) {
+    return {};
+  }
+
+  static constexpr char digits[] = "0123456789abcdef";
+  std::string hex;
+  hex.reserve (block->size * 2);
+  for (std::size_t i = 0; i < block->size; ++i) {
+    hex.push_back (digits[(block->data ()[i] >> 4U) & 0x0FU]);
+    hex.push_back (digits[block->data ()[i] & 0x0FU]);
+  }
+  return hex;
+}
+
 } // namespace
 
 bool
@@ -50,45 +82,76 @@ das_singleton_storage::contains (::entt::id_type type_id) const
 
 das_singleton_storage::block *
 das_singleton_storage::emplace_default (::entt::id_type type_id,
-                                        std::size_t struct_size)
+                                        const runtime_layout &layout)
 {
-  return emplace_with (type_id, struct_size, std::vector<default_field>{});
+  return emplace_with (type_id, layout);
 }
 
 das_singleton_storage::block *
 das_singleton_storage::emplace_with (::entt::id_type type_id,
-                                     std::size_t struct_size,
-                                     const std::vector<default_field> &defaults)
+                                     const runtime_layout &layout)
 {
-  if ((struct_size == 0) || contains (type_id)) {
+  if (!layout.validation_error ().empty () || contains (type_id)) {
     return nullptr;
   }
 
-  block &b = m_blocks[type_id];
-  // `max_align_t` keeps every scalar field aligned; daslang structs are
-  // naturally aligned, so byte offsets recorded at registration are valid.
-  b.words.assign ((struct_size + sizeof (std::max_align_t) - 1)
+  block b;
+  b.layout = std::make_shared<runtime_layout> (layout);
+  b.size = layout.size;
+  b.words.assign ((b.size + sizeof (std::max_align_t) - 1)
                       / sizeof (std::max_align_t),
                   std::max_align_t{});
-  b.size = struct_size;
   std::fill (b.words.begin (), b.words.end (), std::max_align_t{});
 
-  // Apply the declared initialisers over the zeroed block. A short or missing
-  // initialiser leaves the zero in place rather than reading past the value.
-  for (const default_field &field : defaults) {
-    if ((field.offset < 0) || (field.value.empty ())) {
+  uint8_t *bytes = b.data ();
+  for (const runtime_field &field : layout.fields) {
+    if (field.default_value.empty ()) {
       continue;
     }
-    const std::size_t offset = static_cast<std::size_t> (field.offset);
-    if (offset >= struct_size) {
-      continue;
-    }
-    const std::size_t n
-        = std::min (struct_size - offset, field.value.size ());
-    std::memcpy (reinterpret_cast<uint8_t *> (b.words.data ()) + offset,
-                 field.value.data (), n);
+    std::memcpy (bytes + field.offset, field.default_value.data (), field.size);
   }
-  return &b;
+
+  return &m_blocks.emplace (type_id, std::move (b)).first->second;
+}
+
+das_singleton_storage::block *
+das_singleton_storage::migrate (::entt::id_type type_id,
+                               const runtime_layout &layout)
+{
+  if (!layout.validation_error ().empty ()) {
+    return nullptr;
+  }
+  auto it = m_blocks.find (type_id);
+  if (it == m_blocks.end ()) {
+    return nullptr;
+  }
+
+  block &current = it->second;
+  if (current.layout && current.layout->same_shape (layout)) {
+    current.layout = std::make_shared<runtime_layout> (layout);
+    return &current;
+  }
+
+  block migrated;
+  migrated.layout = std::make_shared<runtime_layout> (layout);
+  migrated.size = layout.size;
+  migrated.words.assign ((migrated.size + sizeof (std::max_align_t) - 1)
+                             / sizeof (std::max_align_t),
+                         std::max_align_t{});
+  std::fill (migrated.words.begin (), migrated.words.end (),
+             std::max_align_t{});
+  uint8_t *bytes = migrated.data ();
+  for (const runtime_field &field : layout.fields) {
+    if (!field.default_value.empty ()) {
+      std::memcpy (bytes + field.offset, field.default_value.data (),
+                   field.size);
+    }
+  }
+  if (current.layout) {
+    copy_matching_fields (*current.layout, current.data (), layout, bytes);
+  }
+  current = std::move (migrated);
+  return &current;
 }
 
 das_singleton_storage::block *
@@ -117,12 +180,20 @@ das_singleton_storage::clear ()
   m_blocks.clear ();
 }
 
-void
+bool
 singleton_registry::register_cached_runtime_singleton_component (
     ::entt::id_type type_id, std::string_view type_name,
     std::string_view display_name, int das_struct_size,
     std::vector<descriptor::das_field> das_fields)
 {
+  if (const descriptor *existing = find (type_id);
+      existing != nullptr && existing->type_name != type_name) {
+    wsl::log::xmake ()->error (
+        "Daslang singleton id collision: '{}' and '{}' both hash to {}",
+        existing->type_name, type_name, type_id);
+    return false;
+  }
+
   descriptor desc{};
   desc.type_id = type_id;
   desc.type_name = std::string (type_name);
@@ -143,12 +214,39 @@ singleton_registry::register_cached_runtime_singleton_component (
     desc.is_das_singleton = true;
     desc.das_struct_size = das_struct_size;
     desc.das_fields = std::move (das_fields);
-    desc.can_add_default = true;
+    std::vector<runtime_field> layout_fields;
+    layout_fields.reserve (desc.das_fields.size ());
+    for (const auto &field : desc.das_fields) {
+      layout_fields.push_back ({
+          .name = field.name,
+          .type_name = field.type_name,
+          .offset = static_cast<std::uint32_t> (field.offset),
+          .size = static_cast<std::uint32_t> (field.size),
+          .kind = field.kind,
+          .default_value = field.default_value,
+      });
+    }
+    auto layout = std::make_shared<runtime_layout> (runtime_layout::make (
+        static_cast<std::uint32_t> (das_struct_size), std::move (layout_fields)));
+    const std::string reason = layout->validation_error ();
+    desc.can_add_default = reason.empty ();
+    desc.das_layout = std::move (layout);
+    if (!desc.can_add_default) {
+      wsl::log::xmake ()->error ("Daslang singleton '{}' is not usable: {}",
+                                 type_name, reason);
+    }
   }
 
-  m_type_name_to_type_id[desc.type_name] = type_id;
-  m_display_name_to_type_id[desc.display_name] = type_id;
+  const auto index_name = [type_id] (auto &index, const std::string &name) {
+    auto [it, inserted] = index.try_emplace (name, type_id);
+    if (!inserted && it->second != type_id) {
+      it->second = ambiguous_singleton_name;
+    }
+  };
+  index_name (m_type_name_to_type_id, desc.type_name);
+  index_name (m_display_name_to_type_id, desc.display_name);
   m_descriptors[type_id] = std::move (desc);
+  return true;
 }
 
 bool
@@ -156,7 +254,9 @@ singleton_registry::das_singleton_contains (const ::entt::registry &registry,
                                             ::entt::id_type type_id) const
 {
   const das_singleton_storage *storage = try_storage_for (registry);
-  return storage != nullptr && storage->contains (type_id);
+  const descriptor *desc = find_singleton_component (type_id);
+  return storage != nullptr && desc != nullptr && desc->is_das_singleton
+         && desc->can_add_default && storage->contains (type_id);
 }
 
 bool
@@ -165,21 +265,13 @@ singleton_registry::das_singleton_add (::entt::registry &registry,
 {
   const descriptor *desc = find_singleton_component (type_id);
   if ((desc == nullptr) || !desc->is_das_singleton
+      || !desc->can_add_default
+      || (desc->das_layout == nullptr)
       || (desc->das_struct_size <= 0)
       || das_singleton_contains (registry, type_id)) {
     return false;
   }
-  // Apply the initialisers declared in the daslang struct so `singl add`
-  // yields the authored defaults rather than zeroes.
-  std::vector<das_singleton_storage::default_field> defaults;
-  defaults.reserve (desc->das_fields.size ());
-  for (const auto &field : desc->das_fields) {
-    defaults.push_back ({ field.offset, field.default_value });
-  }
-
-  return storage_for (registry).emplace_with (
-             type_id, static_cast<std::size_t> (desc->das_struct_size),
-             defaults)
+  return storage_for (registry).emplace_with (type_id, *desc->das_layout)
          != nullptr;
 }
 
@@ -201,35 +293,128 @@ uint8_t *
 singleton_registry::das_singleton_data (::entt::registry &registry,
                                         ::entt::id_type type_id) const
 {
-  const das_singleton_storage *storage = try_storage_for (registry);
+  const descriptor *desc = find_singleton_component (type_id);
+  if (desc == nullptr || !desc->is_das_singleton || !desc->can_add_default
+      || desc->das_layout == nullptr) {
+    return nullptr;
+  }
+  das_singleton_storage *storage = try_storage_for (registry);
   if (storage == nullptr) {
     return nullptr;
   }
-  const das_singleton_storage::block *block = storage->data (type_id);
-  return block != nullptr ? const_cast<uint8_t *> (block->data ()) : nullptr;
+  das_singleton_storage::block *block
+      = storage->migrate (type_id, *desc->das_layout);
+  return block != nullptr ? block->data () : nullptr;
+}
+
+std::string
+singleton_registry::das_singleton_hex (::entt::registry &registry,
+                                       ::entt::id_type type_id) const
+{
+  const descriptor *desc = find_singleton_component (type_id);
+  if (desc == nullptr || !desc->is_das_singleton || !desc->can_add_default
+      || desc->das_layout == nullptr) {
+    return {};
+  }
+  das_singleton_storage *storage = try_storage_for (registry);
+  if (storage == nullptr) {
+    return {};
+  }
+  return block_to_hex (storage->migrate (type_id, *desc->das_layout));
 }
 
 std::string
 singleton_registry::das_singleton_hex (const ::entt::registry &registry,
                                        ::entt::id_type type_id) const
 {
+  const descriptor *desc = find_singleton_component (type_id);
+  if (desc == nullptr || !desc->is_das_singleton || !desc->can_add_default
+      || desc->das_layout == nullptr) {
+    return {};
+  }
   const das_singleton_storage *storage = try_storage_for (registry);
   if (storage == nullptr) {
     return {};
   }
   const das_singleton_storage::block *block = storage->data (type_id);
-  if ((block == nullptr) || (block->data () == nullptr) || (block->size == 0)) {
+  if ((block == nullptr) || (block->data () == nullptr) || (block->size == 0)
+      || (block->layout == nullptr)
+      || !block->layout->same_shape (*desc->das_layout)
+      || (block->size != desc->das_layout->size)) {
     return {};
   }
 
-  static constexpr char digits[] = "0123456789abcdef";
-  std::string hex;
-  hex.reserve (block->size * 2);
-  for (std::size_t i = 0; i < block->size; ++i) {
-    hex.push_back (digits[(block->data ()[i] >> 4U) & 0x0FU]);
-    hex.push_back (digits[block->data ()[i] & 0x0FU]);
+  return block_to_hex (block);
+}
+
+std::string
+singleton_registry::das_singleton_json (::entt::registry &registry,
+                                        ::entt::id_type type_id) const
+{
+  const descriptor *desc = find_singleton_component (type_id);
+  if (desc == nullptr || !desc->is_das_singleton || !desc->can_add_default
+      || desc->das_layout == nullptr) {
+    return "{}";
   }
-  return hex;
+  das_singleton_storage *storage = try_storage_for (registry);
+  if (storage == nullptr) {
+    return "{}";
+  }
+  das_singleton_storage::block *block
+      = storage->migrate (type_id, *desc->das_layout);
+  if (block == nullptr || block->data () == nullptr) {
+    return "{}";
+  }
+  rfl::Generic::Object fields;
+  for (const runtime_field &field : desc->das_layout->fields) {
+    fields.insert (field.name, encode_runtime_field (field, block->data ()));
+  }
+  return rfl::json::write (rfl::Generic (std::move (fields)));
+}
+
+std::string
+singleton_registry::das_singleton_json (const ::entt::registry &registry,
+                                        ::entt::id_type type_id) const
+{
+  return das_singleton_json (const_cast<::entt::registry &> (registry), type_id);
+}
+
+bool
+singleton_registry::das_singleton_load_json (::entt::registry &registry,
+                                             ::entt::id_type type_id,
+                                             const std::string &json_str)
+{
+  const descriptor *desc = find_singleton_component (type_id);
+  if (desc == nullptr || !desc->is_das_singleton || !desc->can_add_default
+      || desc->das_layout == nullptr) {
+    return false;
+  }
+  auto parsed = rfl::json::read<rfl::Generic> (json_str);
+  if (!parsed) {
+    return false;
+  }
+  const auto *fields
+      = std::get_if<rfl::Generic::Object> (&parsed.value ().value ());
+  if (fields == nullptr) {
+    return false;
+  }
+  das_singleton_storage &storage = storage_for (registry);
+  if (!storage.contains (type_id)
+      && (storage.emplace_default (type_id, *desc->das_layout) == nullptr)) {
+    return false;
+  }
+  das_singleton_storage::block *block
+      = storage.migrate (type_id, *desc->das_layout);
+  if (block == nullptr || block->data () == nullptr) {
+    return false;
+  }
+  for (const auto &[name, value] : *fields) {
+    const runtime_field *field = find_runtime_field (*desc->das_layout, name);
+    if (field != nullptr) {
+      decode_runtime_field (*field, value, block->data ());
+    }
+  }
+  return true;
 }
 
 bool
@@ -239,6 +424,8 @@ singleton_registry::das_singleton_load_hex (::entt::registry &registry,
 {
   const descriptor *desc = find_singleton_component (type_id);
   if ((desc == nullptr) || !desc->is_das_singleton
+      || !desc->can_add_default
+      || (desc->das_layout == nullptr)
       || (desc->das_struct_size <= 0)) {
     return false;
   }
@@ -273,14 +460,15 @@ singleton_registry::das_singleton_load_hex (::entt::registry &registry,
 
   das_singleton_storage &storage = storage_for (registry);
   if (!storage.contains (type_id)
-      && (storage.emplace_default (type_id, expected) == nullptr)) {
+      && (storage.emplace_default (type_id, *desc->das_layout) == nullptr)) {
     return false;
   }
-  uint8_t *out = das_singleton_data (registry, type_id);
-  if (out == nullptr) {
+  das_singleton_storage::block *block
+      = storage.migrate (type_id, *desc->das_layout);
+  if (block == nullptr || block->data () == nullptr || block->size != expected) {
     return false;
   }
-  std::memcpy (out, decoded.data (), expected);
+  std::memcpy (block->data (), decoded.data (), expected);
   return true;
 }
 
@@ -302,29 +490,35 @@ singleton_registry::find_singleton_component (std::string_view type_name) const
   // 1. Fully qualified C++ type name (e.g. "wsl::comp::singl::physics_manager")
   if (std::unordered_map<std::string, ::entt::id_type>::const_iterator const it
       = m_type_name_to_type_id.find (std::string (type_name));
-      it != m_type_name_to_type_id.end ()) {
+      it != m_type_name_to_type_id.end ()
+      && it->second != ambiguous_singleton_name) {
     return find_singleton_component (it->second);
   }
 
   // 2. Display name (e.g. "Physics Manager", "Score")
   if (std::unordered_map<std::string, ::entt::id_type>::const_iterator const dit
       = m_display_name_to_type_id.find (std::string (type_name));
-      dit != m_display_name_to_type_id.end ()) {
+      dit != m_display_name_to_type_id.end ()
+      && dit->second != ambiguous_singleton_name) {
     return find_singleton_component (dit->second);
   }
 
   // 3. Short name — last segment after "::" (e.g. "physics_manager", "score")
+  const descriptor *match = nullptr;
   for (const auto &entry : m_descriptors) {
     std::string_view const full = entry.second.type_name;
     std::size_t const pos = full.rfind ("::");
     std::string_view const short_name
         = (pos != std::string_view::npos) ? full.substr (pos + 2) : full;
     if (short_name == type_name) {
-      return &entry.second;
+      if (match != nullptr) {
+        return nullptr;
+      }
+      match = &entry.second;
     }
   }
 
-  return nullptr;
+  return match;
 }
 
 std::vector<const singleton_registry::descriptor *>
@@ -421,6 +615,19 @@ singleton_registry::clear_runtime_singleton_components (rsc::world &world)
       m_display_name_to_type_id.erase (it->second.display_name);
     }
     m_descriptors.erase (type_id);
+  }
+
+  m_type_name_to_type_id.clear ();
+  m_display_name_to_type_id.clear ();
+  for (const auto &[type_id, desc] : m_descriptors) {
+    const auto index_name = [type_id] (auto &index, const std::string &name) {
+      auto [it, inserted] = index.try_emplace (name, type_id);
+      if (!inserted && it->second != type_id) {
+        it->second = ambiguous_singleton_name;
+      }
+    };
+    index_name (m_type_name_to_type_id, desc.type_name);
+    index_name (m_display_name_to_type_id, desc.display_name);
   }
 }
 

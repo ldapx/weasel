@@ -22,6 +22,10 @@ transform_system::update_world_recursive (
     entt::registry &reg, entt::entity e, const glm::mat4 &parent_world,
     std::unordered_set<entt::entity> &path, int depth) const
 {
+  if (!reg.valid (e)) {
+    return;
+  }
+
   if (!path.insert (e).second) {
     wsl::log::sys ()->error (
         "transform_system: cycle detected in hierarchy path at entity {} "
@@ -43,10 +47,25 @@ transform_system::update_world_recursive (
   }
 
   if (auto *h = reg.try_get<comp::hierarchy> (e)) {
-    for (entt::entity child = h->first; child != entt::null;
-         child = reg.get<comp::hierarchy> (child).next) {
+    std::unordered_set<entt::entity> siblings;
+    for (entt::entity child = h->first; child != entt::null;) {
+      if (!reg.valid (child) || !siblings.insert (child).second) {
+        wsl::log::sys ()->warn (
+            "transform_system: skipping invalid or cyclic child link from {}",
+            static_cast<std::uint32_t> (e));
+        break;
+      }
+      const auto *child_hierarchy = reg.try_get<comp::hierarchy> (child);
+      if (child_hierarchy == nullptr) {
+        wsl::log::sys ()->warn (
+            "transform_system: child {} has no hierarchy component",
+            static_cast<std::uint32_t> (child));
+        break;
+      }
+      const entt::entity next = child_hierarchy->next;
       update_world_recursive (reg, child, static_cast<glm::mat4> (child_world),
                               path, depth + 1);
+      child = next;
     }
   }
 

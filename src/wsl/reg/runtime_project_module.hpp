@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../das/das_engine.hpp"
+#include <entt/core/fwd.hpp>
 #ifndef IN_MODULE_INTERFACE
 #include <filesystem>
 #endif
@@ -33,6 +34,7 @@ class runtime_context;
 namespace rsc
 {
 struct project;
+class scene;
 }
 
 namespace reg
@@ -149,7 +151,7 @@ public:
    *
    * This clears the registries and applies the registrations.
    */
-  void finalize_load ();
+  bool finalize_load ();
 
   /** Clears runtime-loaded registrations and resets runtime-module state. */
   void unload ();
@@ -294,6 +296,19 @@ private:
     std::vector<wsl::das::das_engine::field_info> fields;
   };
 
+  struct suspended_script_system
+  {
+    rsc::scene *scene = nullptr;
+    entt::id_type type_id{};
+  };
+
+  struct suspended_event_connection
+  {
+    entt::id_type event_type_id{};
+    entt::id_type system_type_id{};
+    std::string handler_name;
+  };
+
   static void gather_files (const std::filesystem::path &base, source_set &out);
 
   static bool is_das_file (const std::filesystem::path &path);
@@ -306,9 +321,11 @@ private:
 
   bool write_registration_cache () const;
 
-  void apply_registration_cache (const registration_cache &cache);
+  bool apply_registration_cache (const registration_cache &cache);
 
   void load_das_registrations_from_cache (const registration_cache &cache);
+  void suspend_script_systems ();
+  void restore_script_systems ();
 
   static bool
   write_generated_translation_unit (const std::filesystem::path &generated_path,
@@ -323,7 +340,10 @@ private:
   std::size_t m_source_hash = 0;
 
   std::unique_ptr<wsl::das::das_engine> m_das_engine;
+  std::unique_ptr<wsl::das::das_engine> m_staged_das_engine;
   std::vector<das_registration> m_das_registrations;
+  std::vector<suspended_script_system> m_suspended_script_systems;
+  std::vector<suspended_event_connection> m_suspended_event_connections;
 
   std::future<bool> m_async_reload_future;
 };

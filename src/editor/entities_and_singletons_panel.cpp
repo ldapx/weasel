@@ -597,50 +597,15 @@ void
 entities_and_singletons_panel::delete_entity (entt::entity entity)
 {
   wsl::rsc::scene *scene = m_runtime_ctx->scene_manager ().get_active ();
-  entt::registry &reg = scene->get_registry ();
-
-  if (!reg.valid (entity)) {
+  if (!scene->get_registry ().valid (entity)) {
     return;
   }
 
-  // Clear selection if it matches
+  scene->destroy_entity_subtree (entity);
   if (m_selection.kind == selection_kind::entity
-      && m_selection.selected_entity == entity) {
+      && !scene->get_registry ().valid (m_selection.selected_entity)) {
     m_selection.clear_all ();
   }
-
-  // Recursively delete children
-  if (reg.all_of<wsl::comp::hierarchy> (entity)) {
-    wsl::comp::hierarchy const h = reg.get<wsl::comp::hierarchy> (
-        entity); // Copy to avoid invalidated ref
-    entt::entity child = h.first;
-    while (child != entt::null) {
-      entt::entity const next = reg.get<wsl::comp::hierarchy> (child).next;
-      delete_entity (child);
-      child = next;
-    }
-
-    // Remove from parent
-    if (h.parent != entt::null && reg.valid (h.parent)) {
-      wsl::comp::hierarchy &ph = reg.get<wsl::comp::hierarchy> (h.parent);
-      if (ph.first == entity) {
-        ph.first = h.next;
-      } else {
-        entt::entity curr = ph.first;
-        while (curr != entt::null) {
-          wsl::comp::hierarchy &ch = reg.get<wsl::comp::hierarchy> (curr);
-          if (ch.next == entity) {
-            ch.next = h.next;
-            break;
-          }
-          curr = ch.next;
-        }
-      }
-    }
-  }
-
-  scene->remove_entity_name (entity);
-  reg.destroy (entity);
 }
 
 void

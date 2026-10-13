@@ -496,6 +496,64 @@ TEST_CASE ("adding a daslang singleton applies the declared initialisers")
          == false);
 }
 
+TEST_CASE ("das singleton layout changes preserve matching fields")
+{
+  wsl::comp::singl::runtime_context rtc ("SceneStream", 0, 0, "", true);
+  wsl::reg::singleton_registry &registry = rtc.singleton_registry ();
+  register_fake_das_singleton (registry);
+
+  entt::registry scene_registry;
+  REQUIRE (registry.das_singleton_add (scene_registry, das_singleton_type_id));
+  uint8_t *old_bytes
+      = registry.das_singleton_data (scene_registry, das_singleton_type_id);
+  REQUIRE (old_bytes != nullptr);
+  const int32_t score = 99;
+  const float ratio = 2.25F;
+  std::memcpy (old_bytes, &score, sizeof (score));
+  std::memcpy (old_bytes + 4, &ratio, sizeof (ratio));
+  old_bytes[8] = 0;
+
+  const std::int32_t level_default = 7;
+  const std::int32_t score_default = 42;
+  const float ratio_default = 1.5F;
+  std::vector<wsl::reg::singleton_registry::descriptor::das_field> fields;
+  fields.push_back ({ "level", "int", 0, 4,
+                      wsl::das::das_engine::field_type_kind::integer,
+                      std::vector<uint8_t> (sizeof (level_default)) });
+  fields.push_back ({ "score", "int", 4, 4,
+                      wsl::das::das_engine::field_type_kind::integer,
+                      std::vector<uint8_t> (sizeof (score_default)) });
+  fields.push_back ({ "ratio", "float", 8, 4,
+                      wsl::das::das_engine::field_type_kind::floating,
+                      std::vector<uint8_t> (sizeof (ratio_default)) });
+  fields.push_back ({ "running", "bool", 12, 1,
+                      wsl::das::das_engine::field_type_kind::boolean, { 1 } });
+  std::memcpy (fields[0].default_value.data (), &level_default,
+               sizeof (level_default));
+  std::memcpy (fields[1].default_value.data (), &score_default,
+               sizeof (score_default));
+  std::memcpy (fields[2].default_value.data (), &ratio_default,
+               sizeof (ratio_default));
+
+  REQUIRE (registry.register_cached_runtime_singleton_component (
+      das_singleton_type_id, "game_state", "Game State", 13,
+      std::move (fields)));
+  const uint8_t *migrated
+      = registry.das_singleton_data (scene_registry, das_singleton_type_id);
+  REQUIRE (migrated != nullptr);
+
+  int32_t level = 0;
+  int32_t migrated_score = 0;
+  float migrated_ratio = 0.0F;
+  std::memcpy (&level, migrated, sizeof (level));
+  std::memcpy (&migrated_score, migrated + 4, sizeof (migrated_score));
+  std::memcpy (&migrated_ratio, migrated + 8, sizeof (migrated_ratio));
+  CHECK (level == level_default);
+  CHECK (migrated_score == score);
+  CHECK (migrated_ratio == ratio);
+  CHECK (migrated[12] == 0);
+}
+
 TEST_CASE ("das singleton hex round trips and rejects bad input")
 {
   wsl::comp::singl::runtime_context rtc ("SceneStream", 0, 0, "", true);
@@ -559,7 +617,7 @@ TEST_CASE ("a daslang singleton survives a scene save and reload")
     REQUIRE (saver.save_json (path.string ()));
   }
 
-  // The payload rides in the `singletons` object as a hex string.
+  // The payload rides in the `singletons` object as a typed JSON object.
   const std::string content = read_file (path.string ());
   const std::vector<json_document::member> top
       = json_document::object_members (content);
@@ -569,7 +627,11 @@ TEST_CASE ("a daslang singleton survives a scene save and reload")
   const json_document::member *entry = json_document::find (
       json_document::object_members (singletons->value), "game_state");
   REQUIRE (entry != nullptr);
-  CHECK (entry->value.size () == 20); // quoted, 18 hex chars
+  // Field-by-field JSON (Phase 3), not the old quoted hex payload.
+  REQUIRE (!entry->value.empty ());
+  CHECK (entry->value.front () == '{');
+  CHECK (entry->value.back () == '}');
+  CHECK (entry->value.find ("score") != std::string::npos);
 
   REQUIRE (
       registry.das_singleton_remove (scene_registry, das_singleton_type_id));

@@ -72,6 +72,34 @@ struct LineInfoArg;
 namespace wsl::das
 {
 
+entt::registry *active_registry ();
+
+template <typename T> struct component_ref
+{
+  entt::registry *registry;
+  entt::entity entity;
+
+  void
+  bind (entt::registry *owner, entt::entity target)
+  {
+    registry = owner;
+    entity = target;
+  }
+
+  T *
+  get () const
+  {
+    entt::registry *active = active_registry ();
+    if (registry == nullptr || active != registry || !registry->valid (entity)) {
+      return nullptr;
+    }
+    return registry->template try_get<T> (entity);
+  }
+
+  operator T * () const { return get (); }
+  T *operator-> () const { return get (); }
+};
+
 // The vector properties below are exposed to daslang as references to the
 // dasLang built-in float2/3/4 types. math::vec2f/vec3f/vec4f and
 // das::float2/3/4 are layout-identical (three/four consecutive floats), so a
@@ -82,7 +110,7 @@ namespace wsl::das
 struct TransformProxy
 {
   entt::entity entity;
-  comp::transform *comp;
+  component_ref<comp::transform> comp;
 
   bool valid () const;
   void bind (comp::transform *component);
@@ -95,7 +123,7 @@ struct TransformProxy
 struct Transform2DProxy
 {
   entt::entity entity;
-  comp::transform_2d *comp;
+  component_ref<comp::transform_2d> comp;
 
   bool valid () const;
   void bind (comp::transform_2d *component);
@@ -108,7 +136,7 @@ struct Transform2DProxy
 struct Camera2DProxy
 {
   entt::entity entity;
-  comp::camera_2d *comp;
+  component_ref<comp::camera_2d> comp;
 
   bool valid () const;
   void bind (comp::camera_2d *component);
@@ -119,7 +147,7 @@ struct Camera2DProxy
 struct Sprite2DProxy
 {
   entt::entity entity;
-  comp::sprite_2d *comp;
+  component_ref<comp::sprite_2d> comp;
 
   bool valid () const;
   void bind (comp::sprite_2d *component);
@@ -131,7 +159,7 @@ struct Sprite2DProxy
 struct PointLightProxy
 {
   entt::entity entity;
-  comp::point_light *comp;
+  component_ref<comp::point_light> comp;
 
   bool valid () const;
   void bind (comp::point_light *component);
@@ -143,7 +171,7 @@ struct PointLightProxy
 struct DirectionalLightProxy
 {
   entt::entity entity;
-  comp::directional_light *comp;
+  component_ref<comp::directional_light> comp;
 
   bool valid () const;
   void bind (comp::directional_light *component);
@@ -155,7 +183,7 @@ struct DirectionalLightProxy
 struct SpotLightProxy
 {
   entt::entity entity;
-  comp::spot_light *comp;
+  component_ref<comp::spot_light> comp;
 
   bool valid () const;
   void bind (comp::spot_light *component);
@@ -183,7 +211,7 @@ SpotLightProxy get_spot_light_accessor (uint32_t entity,
 struct HierarchyProxy
 {
   entt::entity entity;
-  comp::hierarchy *comp;
+  component_ref<comp::hierarchy> comp;
 
   bool valid () const;
   void bind (comp::hierarchy *component);
@@ -196,7 +224,7 @@ struct HierarchyProxy
 struct WorldTransformProxy
 {
   entt::entity entity;
-  comp::world_transform *comp;
+  component_ref<comp::world_transform> comp;
 
   bool valid () const;
   void bind (comp::world_transform *component);
@@ -207,7 +235,7 @@ struct WorldTransformProxy
 struct RigidBodyProxy
 {
   entt::entity entity;
-  comp::rigid_body *comp;
+  component_ref<comp::rigid_body> comp;
 
   bool valid () const;
   void bind (comp::rigid_body *component);
@@ -227,7 +255,7 @@ struct RigidBodyProxy
 struct CharacterBodyProxy
 {
   entt::entity entity;
-  comp::character_body *comp;
+  component_ref<comp::character_body> comp;
 
   bool valid () const;
   void bind (comp::character_body *component);
@@ -240,7 +268,7 @@ struct CharacterBodyProxy
 struct ModelInstance3DProxy
 {
   entt::entity entity;
-  comp::model_instance_3d *comp;
+  component_ref<comp::model_instance_3d> comp;
 
   bool valid () const;
   void bind (comp::model_instance_3d *component);
@@ -256,7 +284,7 @@ struct ModelInstance3DProxy
 struct Area3DProxy
 {
   entt::entity entity;
-  comp::area *comp;
+  component_ref<comp::area> comp;
 
   bool valid () const;
   void bind (comp::area *component);
@@ -271,7 +299,7 @@ struct Area3DProxy
 struct AudioProxy
 {
   entt::entity entity;
-  comp::audio *comp;
+  component_ref<comp::audio> comp;
 
   bool valid () const;
   void bind (comp::audio *component);
@@ -286,7 +314,7 @@ struct AudioProxy
 struct PrefabInstanceProxy
 {
   entt::entity entity;
-  comp::prefab_instance *comp;
+  component_ref<comp::prefab_instance> comp;
 
   bool valid () const;
   void bind (comp::prefab_instance *component);
@@ -298,7 +326,7 @@ struct PrefabInstanceProxy
 struct SubviewportProxy
 {
   entt::entity entity;
-  comp::subviewport *comp;
+  component_ref<comp::subviewport> comp;
 
   bool valid () const;
   void bind (comp::subviewport *component);

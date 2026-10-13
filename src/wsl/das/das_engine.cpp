@@ -3,7 +3,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <thread>
+#include <unordered_set>
 
 #if WEASEL_HAS_DASLANG
 #include "daScript/ast/dyn_modules.h"
@@ -14,8 +16,113 @@
 #include "wsl_event_binds.hpp"
 #include "../log/log.hpp"
 
-#include <signal.h>
 #include <setjmp.h>
+#ifndef _WIN32
+#include <signal.h>
+#include <unistd.h>
+#endif
+
+namespace wsl::das
+{
+
+std::uint64_t
+das_struct_layout_hash (const ::das::StructInfo *type)
+{
+#if WEASEL_HAS_DASLANG
+  if (type == nullptr) {
+    return 0;
+  }
+
+  constexpr std::uint64_t fnv_offset = 14695981039346656037ull;
+  constexpr std::uint64_t fnv_prime = 1099511628211ull;
+  std::uint64_t hash = fnv_offset;
+  std::unordered_set<const ::das::StructInfo *> active;
+
+  const auto hash_bytes = [&] (const void *data, std::size_t size) {
+    const auto *bytes = static_cast<const std::uint8_t *> (data);
+    for (std::size_t i = 0; i < size; ++i) {
+      hash ^= bytes[i];
+      hash *= fnv_prime;
+    }
+  };
+  const auto hash_value = [&] (auto value) { hash_bytes (&value, sizeof value); };
+
+  const auto hash_struct = [&] (const auto &self,
+                                const ::das::StructInfo *structure) -> bool {
+    if (structure == nullptr
+        || (structure->count != 0 && structure->fields == nullptr)
+        || !active.insert (structure).second) {
+      return false;
+    }
+    hash_value (structure->size);
+    hash_value (structure->count);
+    for (std::uint32_t i = 0; i < structure->count; ++i) {
+      const ::das::VarInfo *field = structure->fields[i];
+      if (field == nullptr || field->name == nullptr) {
+        active.erase (structure);
+        return false;
+      }
+      const std::size_t name_size = std::strlen (field->name);
+      hash_value (name_size);
+      hash_bytes (field->name, name_size);
+      hash_value (field->offset);
+      hash_value (field->size);
+      hash_value (static_cast<std::uint32_t> (field->type));
+      hash_value (field->dimSize);
+      if (field->dimSize != 0) {
+        if (field->dim == nullptr) {
+          active.erase (structure);
+          return false;
+        }
+        hash_bytes (field->dim,
+                    static_cast<std::size_t> (field->dimSize)
+                        * sizeof (std::uint32_t));
+      }
+      if (field->type == ::das::Type::tStructure
+          && !self (self, field->structType)) {
+        active.erase (structure);
+        return false;
+      }
+      if (field->type == ::das::Type::tEnumeration
+          || field->type == ::das::Type::tEnumeration8
+          || field->type == ::das::Type::tEnumeration16
+          || field->type == ::das::Type::tEnumeration64) {
+        if (field->enumType == nullptr) {
+          active.erase (structure);
+          return false;
+        }
+        hash_value (field->enumType->flags);
+        hash_value (field->enumType->count);
+        for (std::uint32_t value_index = 0;
+             value_index < field->enumType->count; ++value_index) {
+          const ::das::EnumValueInfo *value
+              = field->enumType->fields[value_index];
+          if (value == nullptr || value->name == nullptr) {
+            active.erase (structure);
+            return false;
+          }
+          const std::size_t value_name_size = std::strlen (value->name);
+          hash_value (value_name_size);
+          hash_bytes (value->name, value_name_size);
+          hash_value (value->value);
+        }
+      }
+    }
+    active.erase (structure);
+    return true;
+  };
+
+  if (!hash_struct (hash_struct, type)) {
+    return 0;
+  }
+  return hash == 0 ? 1 : hash;
+#else
+  (void)type;
+  return 0;
+#endif
+}
+
+} // namespace wsl::das
 
 using namespace das;
 
@@ -244,80 +351,107 @@ ensure_thread_das_environment (TextPrinter &tout,
 
 } // anonymous namespace
 
-// ── SIGSEGV protection for daScript execution ──
-// These live in namespace wsl::das so das_system_adapter.cpp can link to them.
+// ── Crash policy for native faults inside daScript ──
+//
+// A daScript panic is an ordinary script error. It unwinds through the VM's own
+// throw buffer and is turned into an error message by run_protected_call.
+//
+// A SIGSEGV raised while a script call is active is different: it means native
+// code (usually a binding) touched invalid memory. Continuing after it means
+// running on a possibly corrupted heap, so the process reports the faulting
+// script and terminates with the default action (core dump where enabled).
 
 namespace wsl::das::das_signal
 {
 
-thread_local jmp_buf *tls_jmp = nullptr;
-thread_local bool tls_installed = false;
-#ifndef _WIN32
-thread_local struct sigaction tls_prev_segv{};
-thread_local ::std::vector<char> tls_sigstack;
-thread_local bool tls_sigstack_ready = false;
-#endif
+namespace
+{
+
+/** Nesting of script calls on this thread. */
+thread_local int tls_depth = 0;
+/** Label of the innermost script call, for the crash report. */
+thread_local const char *tls_label = nullptr;
+
+} // anonymous namespace
 
 #ifndef _WIN32
+namespace
+{
+
+void
+write_text (const char *text) noexcept
+{
+  const std::size_t length = std::strlen (text);
+  [[maybe_unused]] auto written = ::write (STDERR_FILENO, text, length);
+}
+
+void
+segv_handler (int)
+{
+  if (tls_depth > 0) {
+    write_text ("\nwsl: fatal SIGSEGV while running daScript");
+    if (tls_label != nullptr) {
+      write_text (": ");
+      write_text (tls_label);
+    }
+    write_text ("\n");
+  }
+  signal (SIGSEGV, SIG_DFL);
+  raise (SIGSEGV);
+}
+
+thread_local bool tls_sigstack_ready = false;
+
+} // anonymous namespace
+
 void
 ensure_sigstack ()
 {
   if (tls_sigstack_ready) {
     return;
   }
-  tls_sigstack.resize (SIGSTKSZ);
+  static thread_local std::vector<char> stack;
+  stack.resize (SIGSTKSZ);
   stack_t ss{};
-  ss.ss_sp = tls_sigstack.data ();
-  ss.ss_size = tls_sigstack.size ();
+  ss.ss_sp = stack.data ();
+  ss.ss_size = stack.size ();
   ss.ss_flags = 0;
   sigaltstack (&ss, nullptr);
   tls_sigstack_ready = true;
 }
 
-namespace
-{
-void
-segv_handler (int sig, siginfo_t *info, void *ucontext)
-{
-  (void)sig;
-  (void)info;
-  (void)ucontext;
-  if (tls_jmp) {
-    longjmp (*tls_jmp, 1);
-  }
-  signal (SIGSEGV, SIG_DFL);
-  raise (SIGSEGV);
-}
-} // anonymous namespace
-
 void
 install ()
 {
-  if (tls_installed) {
-    return;
-  }
+  static const bool installed = [] {
+    struct sigaction sa{};
+    sa.sa_handler = segv_handler;
+    sa.sa_flags = SA_ONSTACK;
+    sigemptyset (&sa.sa_mask);
+    return sigaction (SIGSEGV, &sa, nullptr) == 0;
+  }();
+  (void)installed;
   ensure_sigstack ();
-  struct sigaction sa{};
-  sa.sa_sigaction = segv_handler;
-  sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
-  sigemptyset (&sa.sa_mask);
-  sigaction (SIGSEGV, &sa, &tls_prev_segv);
-  tls_installed = true;
+}
+
+const char *
+enter_script (const char *label) noexcept
+{
+  const char *previous_label = tls_label;
+  ++tls_depth;
+  tls_label = label;
+  return previous_label;
 }
 
 void
-restore ()
+leave_script (const char *previous_label) noexcept
 {
-  if (!tls_installed) {
-    return;
-  }
-  sigaction (SIGSEGV, &tls_prev_segv, nullptr);
-  tls_installed = false;
+  --tls_depth;
+  tls_label = tls_depth == 0 ? nullptr : previous_label;
 }
 #else
-// Windows has no POSIX signals or alternate stacks: recovery still works
-// through daslang's own throwBuf longjmp, only the SIGSEGV catcher is
-// unavailable (an unhandled access violation crashes as usual).
+// Windows has no POSIX signal stacks. A native fault inside a script call then
+// ends the process through the default unhandled-exception path.
 void
 ensure_sigstack ()
 {
@@ -328,13 +462,85 @@ install ()
 {
 }
 
-void
-restore ()
+const char *
+enter_script (const char *label) noexcept
 {
+  const char *previous_label = tls_label;
+  ++tls_depth;
+  tls_label = label;
+  return previous_label;
+}
+
+void
+leave_script (const char *previous_label) noexcept
+{
+  --tls_depth;
+  tls_label = tls_depth == 0 ? nullptr : previous_label;
 }
 #endif
 
 } // namespace wsl::das::das_signal
+
+namespace wsl::das
+{
+
+bool
+run_protected_call (::das::Context *ctx, const char *label,
+                    const std::function<void ()> &call, das_error &error)
+{
+  if (ctx == nullptr) {
+    error.message = "No daScript context is available";
+    return false;
+  }
+
+  auto aa = ctx->abiArg;
+  auto acm = ctx->abiCMRES;
+  auto atba = ctx->abiThisBlockArg;
+  char *EP, *SP;
+  ctx->stack.watermark (EP, SP);
+  auto *saved_throw_buf = ctx->throwBuf;
+  const int query_depth = wsl_api_get_query_depth ();
+
+  das_signal::install ();
+  const char *previous_label = das_signal::enter_script (label);
+  jmp_buf panic_target;
+  ctx->throwBuf = &panic_target;
+
+  const bool panicked = setjmp (panic_target) != 0;
+  if (!panicked) {
+    call ();
+  }
+
+  ctx->throwBuf = saved_throw_buf;
+  ctx->abiArg = aa;
+  ctx->abiCMRES = acm;
+  ctx->abiThisBlockArg = atba;
+  ctx->stack.pop (EP, SP);
+  das_signal::leave_script (previous_label);
+
+  const char *exception = ctx->getException ();
+  if (!panicked && exception == nullptr) {
+    return true;
+  }
+
+  if (exception != nullptr) {
+    error.message = exception;
+    if (ctx->exceptionAt.fileInfo != nullptr) {
+      error.file = ctx->exceptionAt.fileInfo->name;
+    }
+    error.line = ctx->exceptionAt.line;
+    error.column = ctx->exceptionAt.column;
+    ctx->clearException ();
+  } else {
+    error.message = "daScript panic";
+  }
+  if (panicked) {
+    wsl_api_restore_query_depth (query_depth);
+  }
+  return false;
+}
+
+} // namespace wsl::das
 
 // Defined outside namespace wsl::das because PULL_ALL_DEFAULT_MODULES
 // expands to code using das::ModuleKarma which fails inside a nested namespace.
@@ -814,70 +1020,96 @@ struct das_engine::impl
     return result;
   }
 
+  /**
+   * Storage class of a field. Scalars and plain vectors are storable; strings
+   * and every other managed or aggregate type are classified as such so that
+   * the component can be rejected with a clear reason.
+   */
   das_engine::field_type_kind
   classify_field_type (const ::das::TypeDecl *td)
   {
+    using kind = das_engine::field_type_kind;
     if (!td) {
-      return das_engine::field_type_kind::unsupported;
-    }
-    if (td->isBool ()) {
-      return das_engine::field_type_kind::boolean;
+      return kind::unsupported;
     }
     if (td->isString ()) {
-      return das_engine::field_type_kind::string;
+      return kind::string;
+    }
+    if (td->isArray () || td->isRef () || td->isPointer () || td->isHandle ()) {
+      return kind::unsupported;
+    }
+    if (td->isBool ()) {
+      return kind::boolean;
+    }
+    switch (td->baseType) {
+    case ::das::Type::tFloat2:
+    case ::das::Type::tFloat3:
+    case ::das::Type::tFloat4:
+      return kind::floating_vector;
+    case ::das::Type::tInt2:
+    case ::das::Type::tInt3:
+    case ::das::Type::tInt4:
+      return kind::integer_vector;
+    default:
+      break;
     }
     if (td->isSignedInteger ()) {
-      return das_engine::field_type_kind::integer;
+      return kind::integer;
     }
     if (td->isUnsignedInteger ()) {
-      return das_engine::field_type_kind::unsigned_integer;
+      return kind::unsigned_integer;
     }
     if (td->isFloatOrDouble ()) {
-      return das_engine::field_type_kind::floating;
+      return kind::floating;
     }
-    return das_engine::field_type_kind::unsupported;
-  }
-
-  int
-  field_type_size (const ::das::TypeDecl *td)
-  {
-    if (!td) {
-      return 0;
-    }
-    if (td->isBool ()) {
-      return sizeof (bool);
-    }
-    if (td->isString ()) {
-      return 0;
-    }
-    if (td->isSignedInteger () || td->isUnsignedInteger ()
-        || td->isFloatOrDouble ()) {
-      switch (td->baseType) {
-      case ::das::Type::tInt8:
-      case ::das::Type::tUInt8:
-        return 1;
-      case ::das::Type::tInt16:
-      case ::das::Type::tUInt16:
-        return 2;
-      case ::das::Type::tInt:
-      case ::das::Type::tUInt:
-      case ::das::Type::tFloat:
-        return 4;
-      case ::das::Type::tInt64:
-      case ::das::Type::tUInt64:
-      case ::das::Type::tDouble:
-        return 8;
-      default:
-        return 4;
-      }
-    }
-    return 0;
+    return kind::unsupported;
   }
 
   bool
   has_program (const std::string &path) const
   {
     return compiled_programs.find (path) != compiled_programs.end ();
+  }
+
+  /**
+   * Bytes of a fresh instance of a struct, with every field initialised the way
+   * the script initialises it: the struct's generated default constructor is
+   * run on zeroed memory in the struct's own context. Empty when the struct
+   * has no constructor or the constructor fails.
+   */
+  std::vector<uint8_t>
+  build_default_instance (const std::string &path,
+                          const std::string &struct_name, int size)
+  {
+    auto ctx_it = program_contexts.find (path);
+    if (size <= 0 || ctx_it == program_contexts.end () || !ctx_it->second) {
+      return {};
+    }
+    auto &ctx = ctx_it->second;
+
+    char *ptr = ctx->allocate (static_cast<uint64_t> (size), nullptr);
+    memset (ptr, 0, static_cast<std::size_t> (size));
+
+    SimFunction *ctor_fn = nullptr;
+    const int32_t nfunc = ctx->getTotalFunctions ();
+    for (int32_t i = 0; i < nfunc; ++i) {
+      auto *sf = ctx->getFunction (i);
+      if (sf && sf->name && struct_name == sf->name && sf->debugInfo
+          && sf->debugInfo->count == 0) {
+        ctor_fn = sf;
+        break;
+      }
+    }
+    if (ctor_fn == nullptr) {
+      return std::vector<uint8_t> (ptr, ptr + size);
+    }
+
+    ctx->evalWithCatch (ctor_fn, nullptr, ptr);
+    if (ctx->getException () != nullptr) {
+      ctx->clearException ();
+      return {};
+    }
+    return std::vector<uint8_t> (ptr, ptr + size);
   }
 
   das_engine::struct_info
@@ -898,23 +1130,26 @@ struct das_engine::impl
     }
     auto st = structs[0];
     result.size_of = st->getSizeOf ();
+    const std::vector<uint8_t> defaults
+        = build_default_instance (path, struct_name, result.size_of);
+
     for (auto &field : st->fields) {
       das_engine::field_info fi;
       fi.name = field.name;
       fi.type_name = field.type ? field.type->describe () : "unknown";
       fi.offset = field.offset;
-      fi.size = field.type ? field_type_size (field.type) : 0;
       fi.kind = classify_field_type (field.type);
-      // Extract default value from the init expression if available.
-      // After type inference, init is folded to an ExprConst for literal
-      // defaults like `sensitivity : float = 0.1`.
-      if (field.init && fi.size > 0) {
-        auto *expr_const = static_cast<ExprConst *> (field.init);
-        if (expr_const && expr_const->type && !expr_const->type->isRef ()) {
-          fi.default_value.resize (static_cast<std::size_t> (fi.size));
-          memcpy (fi.default_value.data (), &expr_const->value,
-                  static_cast<std::size_t> (fi.size));
-        }
+      fi.size
+          = (field.type && fi.kind != das_engine::field_type_kind::unsupported
+             && fi.kind != das_engine::field_type_kind::string)
+                ? field.type->getSizeOf ()
+                : 0;
+      const std::size_t offset = fi.offset;
+      const std::size_t size = fi.size;
+      if (size > 0 && offset <= defaults.size ()
+          && size <= defaults.size () - offset) {
+        const auto begin = defaults.begin () + fi.offset;
+        fi.default_value.assign (begin, begin + fi.size);
       }
       result.fields.push_back (std::move (fi));
     }
@@ -1029,15 +1264,7 @@ struct das_engine::impl
     return true;
   }
 
-  // Safe call wrappers — install a SIGSEGV handler before calling into
-  // the VM so that null dereferences, out-of-bounds accesses, and
-  // use-after-free crashes are caught and turned into error messages
-  // instead of crashing the entire engine.
-  //
-  // We bypass evalWithCatch (which replaces throwBuf with its own jmp_buf)
-  // and call callWithCopyOnReturn directly, setting ctx->throwBuf to our
-  // jmp_buf. This way both SIGSEGV (via signal handler) and daScript
-  // panic() (via throw_error_at → longjmp) jump to the same recovery point.
+  // Use the common panic boundary; native faults are process-fatal.
 
   bool
   call_void_function_safe (const char *func_name, std::string &error,
@@ -1052,76 +1279,16 @@ struct das_engine::impl
     }
 
     auto &entry = it->second;
-    auto *ctx = entry.ctx;
-
-    // Save context state (same as evalWithCatch does)
-    auto aa = ctx->abiArg;
-    auto acm = ctx->abiCMRES;
-    auto atba = ctx->abiThisBlockArg;
-    char *EP, *SP;
-    ctx->stack.watermark (EP, SP);
-    auto *saved_throwBuf = ctx->throwBuf;
-
-    // Install SIGSEGV handler and set throwBuf to our jmp_buf
-    das_signal::install ();
-    jmp_buf sj;
-    das_signal::tls_jmp = &sj;
-    ctx->throwBuf = &sj;
-
-    bool caught = false;
-    if (setjmp (sj) == 0) {
-      // Normal path — execute the function directly
-      ctx->callWithCopyOnReturn (entry.sf, nullptr, nullptr, nullptr);
-    } else {
-      // Longjmp path — either SIGSEGV (signal handler) or daScript panic()
-      caught = true;
-    }
-
-    // Restore context state
-    ctx->throwBuf = saved_throwBuf;
-    das_signal::tls_jmp = nullptr;
-    das_signal::restore ();
-
-    if (caught) {
-      // Extract error info from the context
-      const char *ex = ctx->getException ();
-      if (ex) {
-        // daScript panic — message already set by throw_fatal_error
-        das_err.message = ex;
-        if (ctx->exceptionAt.fileInfo) {
-          das_err.file = ctx->exceptionAt.fileInfo->name;
-        }
-        das_err.line = ctx->exceptionAt.line;
-        das_err.column = ctx->exceptionAt.column;
-        ctx->clearException ();
-      } else {
-        // SIGSEGV — no daScript exception, just the signal
-        das_err.message = "Segmentation fault in daslang script";
-      }
-      // Restore context state after longjmp (stack/abi may be corrupted)
-      ctx->abiArg = aa;
-      ctx->abiCMRES = acm;
-      ctx->abiThisBlockArg = atba;
-      ctx->stack.pop (EP, SP);
+    const bool success = run_protected_call (
+        entry.ctx, func_name,
+        [ctx = entry.ctx, function = entry.sf] {
+          ctx->callWithCopyOnReturn (function, nullptr, nullptr, nullptr);
+        },
+        das_err);
+    if (!success) {
       error = das_err.message;
-      return false;
     }
-
-    // Check for daScript panics that didn't longjmp (shouldn't happen, but
-    // be defensive)
-    const char *ex = ctx->getException ();
-    if (ex) {
-      das_err.message = ex;
-      if (ctx->exceptionAt.fileInfo) {
-        das_err.file = ctx->exceptionAt.fileInfo->name;
-      }
-      das_err.line = ctx->exceptionAt.line;
-      das_err.column = ctx->exceptionAt.column;
-      ctx->clearException ();
-      error = das_err.message;
-      return false;
-    }
-    return true;
+    return success;
   }
 
   bool
@@ -1144,65 +1311,16 @@ struct das_engine::impl
     }
 
     auto &entry = it->second;
-    auto *ctx = entry.ctx;
-
-    auto aa = ctx->abiArg;
-    auto acm = ctx->abiCMRES;
-    auto atba = ctx->abiThisBlockArg;
-    char *EP, *SP;
-    ctx->stack.watermark (EP, SP);
-    auto *saved_throwBuf = ctx->throwBuf;
-
-    das_signal::install ();
-    jmp_buf sj;
-    das_signal::tls_jmp = &sj;
-    ctx->throwBuf = &sj;
-
-    bool caught = false;
-    if (setjmp (sj) == 0) {
-      ctx->callWithCopyOnReturn (entry.sf, nullptr, nullptr, nullptr);
-    } else {
-      caught = true;
-    }
-
-    ctx->throwBuf = saved_throwBuf;
-    das_signal::tls_jmp = nullptr;
-    das_signal::restore ();
-
-    if (caught) {
-      const char *ex = ctx->getException ();
-      if (ex) {
-        das_err.message = ex;
-        if (ctx->exceptionAt.fileInfo) {
-          das_err.file = ctx->exceptionAt.fileInfo->name;
-        }
-        das_err.line = ctx->exceptionAt.line;
-        das_err.column = ctx->exceptionAt.column;
-        ctx->clearException ();
-      } else {
-        das_err.message = "Segmentation fault in daslang script";
-      }
-      ctx->abiArg = aa;
-      ctx->abiCMRES = acm;
-      ctx->abiThisBlockArg = atba;
-      ctx->stack.pop (EP, SP);
+    const bool success = run_protected_call (
+        entry.ctx, func_name,
+        [ctx = entry.ctx, function = entry.sf] {
+          ctx->callWithCopyOnReturn (function, nullptr, nullptr, nullptr);
+        },
+        das_err);
+    if (!success) {
       error = das_err.message;
-      return false;
     }
-
-    const char *ex = ctx->getException ();
-    if (ex) {
-      das_err.message = ex;
-      if (ctx->exceptionAt.fileInfo) {
-        das_err.file = ctx->exceptionAt.fileInfo->name;
-      }
-      das_err.line = ctx->exceptionAt.line;
-      das_err.column = ctx->exceptionAt.column;
-      ctx->clearException ();
-      error = das_err.message;
-      return false;
-    }
-    return true;
+    return success;
   }
 
   void
@@ -1482,6 +1600,12 @@ das_engine::shutdown ()
 namespace wsl::das
 {
 
+std::uint64_t
+das_struct_layout_hash (const ::das::StructInfo *)
+{
+  return 0;
+}
+
 struct das_engine::impl
 {
 };
@@ -1626,18 +1750,30 @@ install ()
 }
 
 void
-restore ()
-{
-}
-
-void
 ensure_sigstack ()
 {
 }
 
-thread_local jmp_buf *tls_jmp = nullptr;
+const char *
+enter_script (const char *label) noexcept
+{
+  return label;
+}
+
+void
+leave_script (const char *) noexcept
+{
+}
 
 } // namespace wsl::das::das_signal
+
+bool
+wsl::das::run_protected_call (::das::Context *, const char *,
+                             const std::function<void ()> &, das_error &error)
+{
+  error.message = "daScript support is not enabled";
+  return false;
+}
 
 bool
 wsl::das::aot_compile_file (const std::string &, const std::string &,

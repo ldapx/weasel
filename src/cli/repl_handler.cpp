@@ -41,7 +41,9 @@
 #include <nlohmann/json.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 #include <chrono>
+#include <cmath>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <thread>
 #include <algorithm>
@@ -253,7 +255,7 @@ set_meta_from_json (entt::meta_any &field_inst, const nlohmann::json &j,
   if (!ptr)
     return false;
 
-  auto type_id = meta.id ();
+  auto type_id = meta.alias ();
 
   // ── model_id: accept a string resource path ──
   if (type_id == entt::type_hash<wsl::rsc::model_id>::value ()) {
@@ -569,6 +571,34 @@ format_das_field_value (std::ostringstream &output, const DasField &field,
     output << v;
     return;
   }
+  case wsl::das::das_engine::field_type_kind::floating_vector: {
+    output << '[';
+    const std::size_t count = field.size / sizeof (float);
+    for (std::size_t i = 0; i < count; ++i) {
+      float lane = 0.0F;
+      std::memcpy (&lane, field_ptr + i * sizeof (lane), sizeof (lane));
+      if (i != 0) {
+        output << ", ";
+      }
+      output << lane;
+    }
+    output << ']';
+    return;
+  }
+  case wsl::das::das_engine::field_type_kind::integer_vector: {
+    output << '[';
+    const std::size_t count = field.size / sizeof (std::int32_t);
+    for (std::size_t i = 0; i < count; ++i) {
+      std::int32_t lane = 0;
+      std::memcpy (&lane, field_ptr + i * sizeof (lane), sizeof (lane));
+      if (i != 0) {
+        output << ", ";
+      }
+      output << lane;
+    }
+    output << ']';
+    return;
+  }
   case wsl::das::das_engine::field_type_kind::string: {
     // The in-memory layout of a daslang string (pointer plus length, or a
     // header block) is not exposed through the field metadata, so do not guess
@@ -694,6 +724,67 @@ set_das_field_value (uint8_t *field_ptr, const DasField &field,
     out_msg = std::to_string (wide);
     return true;
   }
+  case wsl::das::das_engine::field_type_kind::floating_vector: {
+    const std::size_t count = field.size / sizeof (float);
+    if (!j.is_array () || count == 0 || j.size () != count) {
+      out_msg = "expected an array with " + std::to_string (count)
+                + " numeric lanes";
+      return false;
+    }
+    std::vector<float> lanes;
+    lanes.reserve (count);
+    for (const auto &lane : j) {
+      if (!lane.is_number ()) {
+        out_msg = "expected an array of numbers";
+        return false;
+      }
+      const double value = lane.get<double> ();
+      if (!std::isfinite (value)
+          || std::abs (value) > std::numeric_limits<float>::max ()) {
+        out_msg = "vector lane is outside the float range";
+        return false;
+      }
+      lanes.push_back (static_cast<float> (value));
+    }
+    std::memcpy (field_ptr, lanes.data (), field.size);
+    out_msg = j.dump ();
+    return true;
+  }
+  case wsl::das::das_engine::field_type_kind::integer_vector: {
+    const std::size_t count = field.size / sizeof (std::int32_t);
+    if (!j.is_array () || count == 0 || j.size () != count) {
+      out_msg = "expected an array with " + std::to_string (count)
+                + " integer lanes";
+      return false;
+    }
+    std::vector<std::int32_t> lanes;
+    lanes.reserve (count);
+    for (const auto &lane : j) {
+      if (lane.is_number_unsigned ()) {
+        const auto value = lane.get<std::uint64_t> ();
+        if (value > static_cast<std::uint64_t> (
+                        std::numeric_limits<std::int32_t>::max ())) {
+          out_msg = "vector lane is outside the int32 range";
+          return false;
+        }
+        lanes.push_back (static_cast<std::int32_t> (value));
+      } else if (lane.is_number_integer ()) {
+        const auto value = lane.get<std::int64_t> ();
+        if (value < std::numeric_limits<std::int32_t>::min ()
+            || value > std::numeric_limits<std::int32_t>::max ()) {
+          out_msg = "vector lane is outside the int32 range";
+          return false;
+        }
+        lanes.push_back (static_cast<std::int32_t> (value));
+      } else {
+        out_msg = "expected an array of integers";
+        return false;
+      }
+    }
+    std::memcpy (field_ptr, lanes.data (), field.size);
+    out_msg = j.dump ();
+    return true;
+  }
   case wsl::das::das_engine::field_type_kind::string:
     out_msg = "string fields cannot be set from the CLI (the daslang string "
               "layout is not exposed)";
@@ -722,7 +813,7 @@ format_meta_value (std::ostringstream &output, const entt::meta_any &field_inst,
     return;
   }
 
-  auto type_id = type.id ();
+  auto type_id = type.alias ();
 
   // arithmetic
   if (type.is_arithmetic ()) {
@@ -1078,7 +1169,11 @@ command_executor::ensure_runtime (runtime_load_mode mode)
                 "user-defined types.\n";
     return false;
   }
-  module.finalize_load ();
+  if (!module.finalize_load ()) {
+    m_output << "Runtime module registration failed:\n  "
+             << module.last_error () << "\n";
+    return false;
+  }
   m_output << "Registry source: full compile.\n";
   wsl::log::cli ()->info ("Runtime module loaded successfully.");
   return true;
@@ -1772,9 +1867,9 @@ command_executor::cmd_scene (const std::vector<std::string> &tokens)
       }
       const auto *pool
           = m_rtc.component_registry ().das_component_pool (reg, desc->type_id);
-      if (pool != nullptr && !pool->entries.empty ()) {
+      if (pool != nullptr && pool->size () != 0) {
         m_output << "  - " << desc->display_name << ": "
-                 << pool->entries.size () << "\n";
+                 << pool->size () << "\n";
       }
     }
   }
@@ -1842,8 +1937,7 @@ command_executor::cmd_ent (const std::vector<std::string> &tokens)
       m_output << "Unknown entity: " << tokens[2] << "\n";
       return;
     }
-    scene->remove_entity_name (e);
-    scene->get_registry ().destroy (e);
+    scene->destroy_entity_subtree (e);
     m_output << "Entity " << tokens[2] << " destroyed.\n";
     auto_save_scene ();
   } else if (action == "ren") {
@@ -2441,7 +2535,7 @@ command_executor::cmd_singl (const std::vector<std::string> &tokens)
       return;
     }
     if (desc->is_das_singleton) {
-      if (!desc->das_struct_size > 0) {
+      if (desc->das_struct_size <= 0) {
         m_output << "Layout for " << desc->display_name
                  << " is unknown; run 'script reload'.\n";
         return;
@@ -3954,8 +4048,16 @@ command_executor::cmd_script (const std::vector<std::string> &tokens)
     // during Module::shutdownInternal() at process exit.
     wsl::log::cli ()->info ("Reloading runtime scripts...");
     m_output << "Reloading runtime scripts...\n";
-    module.compile_and_load (*m_current_project);
-    module.finalize_load ();
+    if (!module.compile_and_load (*m_current_project)) {
+      m_output << "Reload FAILED:\n  " << module.last_error () << "\n"
+               << "  Run 'script status' for details.\n";
+      return;
+    }
+    if (!module.finalize_load ()) {
+      m_output << "Reload FAILED:\n  " << module.last_error () << "\n"
+               << "  Run 'script status' for details.\n";
+      return;
+    }
     if (!module.has_loaded_module ()) {
       m_output << "Reload FAILED:\n  " << module.last_error () << "\n"
                << "  Run 'script status' for details.\n";

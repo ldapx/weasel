@@ -51,6 +51,8 @@ namespace wsl
 namespace reg
 {
 
+struct runtime_layout;
+
 /** Ordering modes for singleton component descriptor queries. */
 enum class singleton_component_order
 {
@@ -95,18 +97,12 @@ concept has_serialize = requires (T &v) {
 class das_singleton_storage
 {
 public:
-  /** One field initialiser to overlay on a freshly zeroed value. */
-  struct default_field
-  {
-    int offset = 0;
-    std::vector<uint8_t> value;
-  };
-
   /** One type-erased value block, aligned for any scalar daslang field. */
   struct block
   {
     std::vector<std::max_align_t> words;
     std::size_t size = 0;
+    std::shared_ptr<runtime_layout> layout;
 
     uint8_t *
     data ()
@@ -127,18 +123,21 @@ public:
   bool contains (::entt::id_type type_id) const;
 
   /**
-   * Creates a zero-filled value for the given type id.
+   * Creates a value with the layout defaults for the given type id.
    * @return The new block, or `nullptr` when one already exists or the size is
    * zero.
    */
-  block *emplace_default (::entt::id_type type_id, std::size_t struct_size);
+  block *emplace_default (::entt::id_type type_id,
+                          const runtime_layout &layout);
 
   /**
-   * Creates a value for the given type id, overlaying the given field
-   * initialisers on the zeroed block.
+   * Creates a value with the layout defaults. Returns `nullptr` when present.
    */
-  block *emplace_with (::entt::id_type type_id, std::size_t struct_size,
-                       const std::vector<default_field> &defaults);
+  block *emplace_with (::entt::id_type type_id, const runtime_layout &layout);
+
+  /** Migrates an existing value to a new shape while preserving matching
+   * fields. Returns `nullptr` when no value exists. */
+  block *migrate (::entt::id_type type_id, const runtime_layout &layout);
 
   /** Returns the value for the given type id, or `nullptr`. */
   block *data (::entt::id_type type_id);
@@ -212,6 +211,8 @@ public:
       std::vector<uint8_t> default_value;
     };
     std::vector<das_field> das_fields;
+    /** Validated layout used to initialize and migrate stored values. */
+    std::shared_ptr<runtime_layout> das_layout;
     /** Function pointer to check if the singleton exists in a registry. */
     bool (*contains) (::entt::registry &) = nullptr;
     /** Function pointer to emplace a default instance of the singleton. */
@@ -253,7 +254,7 @@ public:
    * `das_struct_size` registers a discovery-only descriptor, which is what
    * happens for stale caches written before the layout was recorded.
    */
-  void register_cached_runtime_singleton_component (
+  bool register_cached_runtime_singleton_component (
       ::entt::id_type type_id, std::string_view type_name,
       std::string_view display_name, int das_struct_size = 0,
       std::vector<descriptor::das_field> das_fields = {});
@@ -282,8 +283,21 @@ public:
                                ::entt::id_type type_id) const;
 
   /** Serializes a daslang singleton value as lowercase hex, or empty. */
+  std::string das_singleton_hex (::entt::registry &registry,
+                                ::entt::id_type type_id) const;
   std::string das_singleton_hex (const ::entt::registry &registry,
                                  ::entt::id_type type_id) const;
+
+  /** Serializes a daslang singleton value as a JSON object with typed fields. */
+  std::string das_singleton_json (::entt::registry &registry,
+                                 ::entt::id_type type_id) const;
+  std::string das_singleton_json (const ::entt::registry &registry,
+                                  ::entt::id_type type_id) const;
+
+  /** Restores a daslang singleton value from a JSON object with typed fields. */
+  bool das_singleton_load_json (::entt::registry &registry,
+                                ::entt::id_type type_id,
+                                const std::string &json_str);
 
   /**
    * Restores a daslang singleton value from lowercase hex.

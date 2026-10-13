@@ -52,7 +52,7 @@ public:
   explicit scene (comp::singl::runtime_context *runtime_ctx,
                   comp::singl::editor_context *editor_ctx,
                   const std::string &name);
-  ~scene () = default;
+  ~scene ();
 
   /**
    * Move constructor.
@@ -124,6 +124,9 @@ public:
 
   /** Clears all entities and their names from the registry. */
   void clear_registry ();
+
+  /** Destroys an entity and its descendants, keeping hierarchy links valid. */
+  void destroy_entity_subtree (entt::entity entity);
 
   /** Adds a resource to the scene's load list. */
   void add_resource (io::resource_type type, entt::id_type id);

@@ -1,6 +1,9 @@
 #pragma once
 
 #ifndef IN_MODULE_INTERFACE
+#include <cstdint>
+#endif
+#ifndef IN_MODULE_INTERFACE
 #include <memory>
 #endif
 #ifndef IN_MODULE_INTERFACE
@@ -17,6 +20,9 @@
 #endif
 #ifndef IN_MODULE_INTERFACE
 #include <csetjmp>
+#endif
+#ifndef IN_MODULE_INTERFACE
+#include <functional>
 #endif
 
 namespace das
@@ -118,12 +124,18 @@ public:
    */
   bool execute_file (const std::filesystem::path &path);
 
+  /** Storage class of a struct field, as far as component storage cares. */
   enum class field_type_kind
   {
     integer,
     unsigned_integer,
     floating,
     boolean,
+    /** float2, float3 or float4; size is 8, 12 or 16 bytes. */
+    floating_vector,
+    /** int2, int3 or int4; size is 8, 12 or 16 bytes. */
+    integer_vector,
+    /** Managed memory (strings); cannot be stored in component blocks. */
     string,
     unsupported
   };
@@ -267,13 +279,13 @@ public:
    *
    * :param path: Path to the compiled .das file.
    * :param func_name: Name of the function to call.
-   * :return: \c true on success, \c false on error (check last_error()).
+   * :return: \c true on success, \c false on panic (check last_error()).
    */
   bool call_void_function_safe (const std::filesystem::path &path,
                                 const char *func_name);
 
   /**
-   * Executes a void function by name with SIGSEGV protection.
+   * Executes a void function by name with daScript panic handling.
    *
    * :param func_name: Name of the function to call (global lookup).
    * :return: \c true on success, \c false on error (check last_error()).
@@ -299,17 +311,45 @@ private:
   bool m_initialized = false;
 };
 
+/** Stable structural signature for a daScript struct layout; zero if unknown. */
+std::uint64_t das_struct_layout_hash (const ::das::StructInfo *type);
+
 } // namespace wsl::das
 
-// SIGSEGV protection — declared outside class for cross-TU use.
+namespace wsl::das
+{
+
+/**
+ * Runs a call into daScript and turns a script panic into an error message.
+ *
+ * Saves and restores the VM's call state, installs the panic target and the
+ * per-thread script bookkeeping, and restores the query nesting depth when a
+ * panic unwinds through the call. Native faults are not handled here; see
+ * das_signal.
+ *
+ * Must not be called from inside a scope that owns RAII state which has to
+ * survive a panic: destructors of frames between the call and the panic do not
+ * run. Create such scopes around the call instead.
+ *
+ * :param ctx:   Context the call runs in.
+ * :param label: Name for crash reports, valid for the duration of the call.
+ * :param call:  The call to run.
+ * :param error: Receives the panic message with its file and line on failure.
+ * :return: \c true when the call completed, \c false when it panicked.
+ */
+bool run_protected_call (::das::Context *ctx, const char *label,
+                         const std::function<void ()> &call, das_error &error);
+
+} // namespace wsl::das
+
 namespace wsl::das::das_signal
 {
+/** Installs the process-wide SIGSEGV policy once and this thread's alt stack.
+ */
 void install ();
-void restore ();
+/** Makes sure this thread has the alternate signal stack. */
 void ensure_sigstack ();
-// Must be jmp_buf (not sigjmp_buf) to match das::Context::throwBuf, which
-// callers assign from the same buffer. glibc types them identically, but
-// on macOS/BSD they are distinct, incompatibly-sized types. Caller owns
-// the storage.
-extern thread_local jmp_buf *tls_jmp;
+/** Marks entry into and exit from a script call on this thread. */
+const char *enter_script (const char *label) noexcept;
+void leave_script (const char *previous_label) noexcept;
 } // namespace wsl::das::das_signal

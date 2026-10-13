@@ -8,6 +8,9 @@
 #include <algorithm>
 #endif
 #ifndef IN_MODULE_INTERFACE
+#include <cstdint>
+#endif
+#ifndef IN_MODULE_INTERFACE
 #include <mutex>
 #endif
 #ifndef IN_MODULE_INTERFACE
@@ -92,6 +95,8 @@ struct event_source_debug_entry
   std::string type_name;
   /** Payload size in bytes (``sizeof (Signal)``); 0 when unknown. */
   std::size_t size = 0;
+  /** Runtime structure signature when a payload is declared by daScript. */
+  std::uint64_t payload_layout_hash = 0;
   std::size_t listener_count = 0;
   std::size_t emit_count = 0;
   entt::id_type owner_system_type_id{};
@@ -414,6 +419,9 @@ struct event_hub
     // the captured owner instance. Left null for `ecs_system` owners, which are
     // resolved at dispatch time via `resolve_system_by_type`.
     void *owner_ptr = nullptr;
+    void *owner_identity = nullptr;
+    std::size_t payload_size = 0;
+    std::uint64_t payload_layout_hash = 0;
   };
 
   struct registered_event_source
@@ -433,6 +441,9 @@ struct event_hub
     std::string handler_name;
     handler_invoke_fn invoke = nullptr;
     void *owner_ptr = nullptr;
+    void *owner_identity = nullptr;
+    std::size_t payload_size = 0;
+    std::uint64_t payload_layout_hash = 0;
   };
 
   /**
@@ -465,6 +476,8 @@ struct event_hub
     entt::id_type system_type_id{};
     handler_invoke_fn invoke = nullptr;
     void *owner_ptr = nullptr;
+    std::size_t payload_size = 0;
+    std::uint64_t payload_layout_hash = 0;
   };
 
   /**
@@ -480,7 +493,8 @@ struct event_hub
       if (connection.event_type_id == event_type_id
           && connection.invoke != nullptr) {
         result.push_back ({ connection.system_type_id, connection.invoke,
-                            connection.owner_ptr });
+                            connection.owner_ptr, connection.payload_size,
+                            connection.payload_layout_hash });
       }
     }
 
@@ -544,9 +558,60 @@ struct event_hub
                    [system_type_id] (const registered_event_sink &entry) {
                      return entry.system_type_id == system_type_id;
                    });
+    std::erase_if (connected_handlers,
+                   [system_type_id] (const connected_sink &entry) {
+                     return entry.system_type_id == system_type_id;
+                   });
 
     if (db != nullptr) {
+      std::erase_if (db->connections,
+                     [system_type_id] (const event_connection_debug_entry &entry) {
+                       return entry.system_type_id == system_type_id;
+                     });
       db->clear_system_declarations (system_type_id);
+      db->rebuild_listener_counts ();
+    }
+  }
+
+  void
+  clear_system_instance (const void *owner_identity)
+  {
+    if (owner_identity == nullptr) {
+      return;
+    }
+
+    std::lock_guard<std::recursive_mutex> lock (mutex);
+    std::vector<event_connection_data> removed_connections;
+    for (const connected_sink &entry : connected_handlers) {
+      if (entry.owner_identity == owner_identity) {
+        removed_connections.push_back ({ entry.event_type_id,
+                                         entry.system_type_id,
+                                         entry.handler_name });
+      }
+    }
+    std::erase_if (registered_event_sinks,
+                   [owner_identity] (const registered_event_sink &entry) {
+                     return entry.owner_identity == owner_identity;
+                   });
+    std::erase_if (connected_handlers,
+                   [owner_identity] (const connected_sink &entry) {
+                     return entry.owner_identity == owner_identity;
+                   });
+    if (db != nullptr) {
+      std::erase_if (db->connections,
+                     [&removed_connections] (
+                         const event_connection_debug_entry &entry) {
+                       return std::ranges::any_of (
+                           removed_connections,
+                           [&entry] (const event_connection_data &removed) {
+                             return removed.event_type_id == entry.event_type_id
+                                    && removed.system_type_id
+                                           == entry.system_type_id
+                                    && removed.handler_name
+                                           == entry.handler_name;
+                           });
+                     });
+      db->rebuild_listener_counts ();
     }
   }
 
@@ -724,7 +789,10 @@ struct event_hub
                             entt::id_type system_type_id,
                             std::string_view system_type_name,
                             const char *handler_name, handler_invoke_fn invoke,
-                            void *owner = nullptr)
+                            void *owner = nullptr,
+                            std::size_t payload_size = 0,
+                            const void *owner_identity = nullptr,
+                            std::uint64_t payload_layout_hash = 0)
   {
     std::lock_guard<std::recursive_mutex> lock (mutex);
     if (db != nullptr) {
@@ -751,6 +819,9 @@ struct event_hub
     handler.handler_name = name;
     handler.invoke = invoke;
     handler.owner_ptr = owner;
+    handler.owner_identity = const_cast<void *> (owner_identity);
+    handler.payload_size = payload_size;
+    handler.payload_layout_hash = payload_layout_hash;
     registered_event_sinks.push_back (std::move (handler));
   }
 
@@ -827,6 +898,7 @@ struct event_hub
     handler.handler_name = name;
     handler.invoke = invoke;
     handler.owner_ptr = owner;
+    handler.payload_size = sizeof (Signal);
     registered_event_sinks.push_back (std::move (handler));
   }
 
@@ -863,6 +935,45 @@ struct event_hub
       return false;
     }
 
+    if (db != nullptr && registered_handler->payload_size != 0) {
+      const auto event = db->entries.find (event_type_id);
+      if (event != db->entries.end () && event->second.size != 0
+          && event->second.size != registered_handler->payload_size) {
+        wsl::log::rsc ()->error (
+            "connect: payload size mismatch for event={:#x} handler='{}' "
+            "(source {}, sink {})",
+            event_type_id, handler_name, event->second.size,
+            registered_handler->payload_size);
+        return false;
+      }
+    }
+
+    if (registered_handler->payload_layout_hash != 0) {
+      if (db != nullptr) {
+        const auto event = db->entries.find (event_type_id);
+        if (event != db->entries.end ()
+            && event->second.payload_layout_hash != 0
+            && event->second.payload_layout_hash
+                   != registered_handler->payload_layout_hash) {
+          wsl::log::rsc ()->error (
+              "connect: payload layout mismatch for event={:#x} handler='{}'",
+              event_type_id, handler_name);
+          return false;
+        }
+      }
+      for (const registered_event_sink &other : registered_event_sinks) {
+        if (other.event_type_id == event_type_id
+            && other.payload_layout_hash != 0
+            && other.payload_layout_hash
+                   != registered_handler->payload_layout_hash) {
+          wsl::log::rsc ()->error (
+              "connect: script sinks disagree on payload layout for event={:#x}",
+              event_type_id);
+          return false;
+        }
+      }
+    }
+
     for (const connected_sink &connection : connected_handlers) {
       if (connection.event_type_id == event_type_id
           && connection.system_type_id == system_type_id
@@ -888,6 +999,10 @@ struct event_hub
     connection.handler_name = handler_name;
     connection.invoke = registered_handler->invoke;
     connection.owner_ptr = registered_handler->owner_ptr;
+    connection.owner_identity = registered_handler->owner_identity;
+    connection.payload_size = registered_handler->payload_size;
+    connection.payload_layout_hash
+        = registered_handler->payload_layout_hash;
     connected_handlers.push_back (connection);
 
     if (db != nullptr) {
@@ -957,6 +1072,9 @@ struct event_hub
     // unlocked, and one of them may connect or disconnect, which would
     // invalidate an iteration over the live vector.
     for (const dispatch_entry &entry : collect_handlers (event_type_id)) {
+      if (entry.payload_size != 0 && entry.payload_size != sizeof (Signal)) {
+        continue;
+      }
       void *owner = resolve_owner (entry);
       if (owner == nullptr) {
         continue;
@@ -977,8 +1095,13 @@ struct event_hub
    * :param data: Payload bytes; must match the registered event size.
    */
   void
-  dispatch_by_id (entt::id_type event_type_id, const void *data)
+  dispatch_by_id (entt::id_type event_type_id, const void *data,
+                  std::size_t payload_size,
+                  std::uint64_t payload_layout_hash = 0)
   {
+    if (data == nullptr || payload_size == 0) {
+      return;
+    }
     if (db != nullptr) {
       auto it = db->entries.find (event_type_id);
       if (it != db->entries.end ()) {
@@ -996,6 +1119,19 @@ struct event_hub
     }
 
     for (const dispatch_entry &entry : collect_handlers (event_type_id)) {
+      if (entry.payload_size != 0 && entry.payload_size != payload_size) {
+        wsl::log::rsc ()->error (
+            "event dispatch payload size mismatch for event={:#x} (expected {}, got {})",
+            event_type_id, entry.payload_size, payload_size);
+        continue;
+      }
+      if (entry.payload_layout_hash != 0
+          && entry.payload_layout_hash != payload_layout_hash) {
+        wsl::log::rsc ()->error (
+            "event dispatch payload layout mismatch for event={:#x}",
+            event_type_id);
+        continue;
+      }
       void *owner = resolve_owner (entry);
       if (owner == nullptr) {
         continue;
