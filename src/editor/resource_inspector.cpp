@@ -5,9 +5,9 @@
 #include "wsl/comp/singl/editor_context.hpp"
 #include "renderer_imgui.hpp"
 #include "wsl/comp/singl/runtime_context.hpp"
+#include "wsl/gfx/view_gizmo.hpp"
 #include "wsl/rsc/resource_manager.hpp"
 
-#include "imviewguizmo.hpp"
 #include <SDL3/SDL_dialog.h>
 #include <SDL3/SDL_gpu.h>
 #include <SDL3/SDL_stdinc.h>
@@ -684,50 +684,37 @@ resource_inspector::draw ()
       ImGui::Image ((ImTextureID)preview_tex, child_avail);
       if ((preview_tex != nullptr) && tab == active_tab::models
           && (m_editor_ctx != nullptr) && m_selected_model != entt::null) {
-        // Must be called once per ImGui frame for the gizmo to reset hover
-        // state properly
-        ImViewGuizmo::SetContext (0x52455350U); // 'RESP' context
-        ImViewGuizmo::BeginFrame ();
+        const float gizmo_scale = 0.30F;
+        const float gizmo_half = 128.0F * gizmo_scale;
+        const float pad = 8.0F;
 
-        auto &style = ImViewGuizmo::GetStyle ();
-        style.scale = 0.30F;
-        style.animateSnap = true;
+        const glm::vec2 view_size (child_avail.x, child_avail.y);
+        const glm::vec2 gizmo_center (view_size.x - gizmo_half - pad,
+                                      gizmo_half + pad);
+        const wsl::gfx::view_gizmo_layout gizmo_layout
+            = wsl::gfx::view_gizmo_layout::from_pixel_center (
+                gizmo_center, view_size, gizmo_scale);
 
-        glm::vec3 cam_pos;
-        glm::quat cam_rot;
-        m_editor_ctx->get_imgui_renderer ()->preview_get_camera (cam_pos,
-                                                                 cam_rot);
+        const ImVec2 mouse = ImGui::GetMousePos ();
+        const ImVec2 mouse_delta = ImGui::GetIO ().MouseDelta;
 
-        const float gizmo_diameter = 256.0F * style.scale;
-        const float half = gizmo_diameter * 0.5F;
-        const float pad = 5.0F;
-        const glm::vec3 pivot (0.0F);
+        wsl::gfx::view_gizmo_input gizmo_input;
+        gizmo_input.pointer_position = wsl::gfx::view_gizmo_ndc_from_pixel (
+            glm::vec2 (mouse.x - child_min.x, mouse.y - child_min.y),
+            view_size);
+        gizmo_input.pointer_delta = wsl::gfx::view_gizmo_ndc_delta_from_pixel (
+            glm::vec2 (mouse_delta.x, mouse_delta.y), view_size);
+        gizmo_input.delta_time = ImGui::GetIO ().DeltaTime;
+        gizmo_input.primary_down = ImGui::IsMouseDown (ImGuiMouseButton_Left);
+        gizmo_input.primary_released
+            = ImGui::IsMouseReleased (ImGuiMouseButton_Left);
+        gizmo_input.pointer_over_viewport = ImGui::IsMouseHoveringRect (
+            child_min,
+            ImVec2 (child_min.x + child_avail.x, child_min.y + child_avail.y),
+            false);
 
-        bool modified = false;
-
-        ImVec2 const tool_anchor (child_min.x + child_avail.x - half - pad,
-                                  child_min.y + half + pad);
-
-        const float inset = half * 0.6F;
-        ImVec2 const rotate_center (child_min.x + child_avail.x - inset - pad,
-                                    child_min.y + inset + pad);
-
-        modified |= ImViewGuizmo::Rotate (cam_pos, cam_rot, pivot,
-                                          rotate_center, 0.01F);
-
-        ImVec2 btn_pos (tool_anchor.x + half
-                            - ((style.toolButtonRadius * style.scale) * 2.0F),
-                        tool_anchor.y + half + 8.0F);
-
-        modified |= ImViewGuizmo::Dolly (cam_pos, cam_rot, btn_pos, 0.05F);
-
-        btn_pos.y += ((style.toolButtonRadius * style.scale) * 2.0F) + 6.0F;
-        modified |= ImViewGuizmo::Pan (cam_pos, cam_rot, btn_pos, 0.01F);
-
-        if (modified || ImViewGuizmo::IsUsing ()) {
-          m_editor_ctx->get_imgui_renderer ()->preview_set_camera_from_gizmo (
-              cam_pos, cam_rot);
-        }
+        m_editor_ctx->get_imgui_renderer ()->preview_navigate (gizmo_input,
+                                                               gizmo_layout);
       }
     } else if (tab == active_tab::audio) {
       auto &mgr = m_runtime_ctx->resource_manager ();

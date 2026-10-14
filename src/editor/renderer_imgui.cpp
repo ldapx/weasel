@@ -36,7 +36,6 @@
 
 #include <SDL3/SDL_gpu.h>
 
-
 #include <limits>
 
 namespace editor
@@ -473,12 +472,12 @@ renderer_imgui::renderer_imgui (wsl::gfx::render_window &window,
 
   apply_editor_style (theme);
 
-  ImGui_ImplSDL3_InitForSDLGPU (window.handler());
+  ImGui_ImplSDL3_InitForSDLGPU (window.handler ());
 
   ImGui_ImplSDLGPU3_InitInfo init_info{};
   init_info.Device = ctx->gpu_device;
   init_info.ColorTargetFormat
-      = SDL_GetGPUSwapchainTextureFormat (ctx->gpu_device, window.handler());
+      = SDL_GetGPUSwapchainTextureFormat (ctx->gpu_device, window.handler ());
   init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
   init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
   init_info.PresentMode = SDL_GPU_PRESENTMODE_IMMEDIATE;
@@ -560,6 +559,9 @@ renderer_imgui::request_model_preview (
 
   m_preview_runtime = runtime_ctx;
   m_preview_model = model_eid;
+
+  // Re-enabled by preview_navigate while a model preview is being drawn.
+  m_preview_gizmo_visible = false;
 
   // Use the provided size, but clamp to reasonable limits if needed
   const uint32_t new_w = (w > 0) ? w : 256;
@@ -727,7 +729,7 @@ renderer_imgui::render_model_preview_low_lod (
     wsl::comp::singl::runtime_context &runtime_ctx, entt::id_type model_id,
     uint32_t w, uint32_t h)
 {
-  auto &mgr = runtime_ctx.resource_manager();
+  auto &mgr = runtime_ctx.resource_manager ();
 
   SDL_GPUCommandBuffer const *cmd = m_ctx->main_cmd;
   if (cmd == nullptr) {
@@ -866,6 +868,25 @@ renderer_imgui::render_model_preview_low_lod (
     }
   }
 
+  // Draw the navigation widget inside the preview pass so it is baked into
+  // the preview texture instead of an ImGui overlay.
+  if ((scene_renderer != nullptr) && m_preview_gizmo_visible) {
+    wsl::gfx::view_gizmo_camera gizmo_camera;
+    gizmo_camera.position = m_preview_cam_pos;
+    gizmo_camera.rotation = m_preview_cam_rot;
+    gizmo_camera.pivot = m_preview_pivot;
+
+    std::vector<wsl::gfx::overlay_vertex> overlay;
+    // The preview pass is multisampled, so hard edges are already resolved
+    // without the overlay builder's alpha fringe.
+    wsl::gfx::view_gizmo_build_options build_options;
+    build_options.antialias_feather = 0.0F;
+    m_preview_gizmo.build_overlay (gizmo_camera, m_preview_gizmo_layout,
+                                   overlay, build_options);
+    scene_renderer->draw_debug_overlay (
+        overlay, wsl::gfx::scene_renderer::overlay_blending::write);
+  }
+
   SDL_EndGPURenderPass (pass);
   m_ctx->main_pass = old_pass;
   return true;
@@ -888,28 +909,37 @@ renderer_imgui::on_resize (uint32_t /*unused*/, uint32_t /*unused*/)
 }
 
 void
-renderer_imgui::preview_set_camera_from_gizmo (const glm::vec3 &pos,
-                                               const glm::quat &rot)
+renderer_imgui::preview_navigate (const wsl::gfx::view_gizmo_input &input,
+                                  const wsl::gfx::view_gizmo_layout &layout)
 {
-  m_preview_cam_pos = pos;
-  m_preview_cam_rot = rot;
+  wsl::gfx::view_gizmo_camera camera;
+  camera.position = m_preview_cam_pos;
+  camera.rotation = m_preview_cam_rot;
+  camera.pivot = m_preview_pivot;
 
-  m_preview_user_camera_active = true;
-  m_preview_last_gizmo_time = ImGui::GetTime ();
+  const bool modified = m_preview_gizmo.interact (input, layout, camera);
+  const bool interacting
+      = m_preview_gizmo.is_active () || m_preview_gizmo.is_animating ();
 
-  // stop auto-rotate while user is interacting
-  m_preview_rotate = false;
+  if (modified || interacting) {
+    m_preview_cam_pos = camera.position;
+    m_preview_cam_rot = camera.rotation;
 
-  // ensure we redraw while user is interacting
-  m_preview_dirty = true;
-}
+    m_preview_user_camera_active = true;
+    m_preview_last_gizmo_time = ImGui::GetTime ();
 
-void
-renderer_imgui::preview_get_camera (glm::vec3 &out_pos,
-                                    glm::quat &out_rot) const
-{
-  out_pos = m_preview_cam_pos;
-  out_rot = m_preview_cam_rot;
+    // Stop auto-rotate while the user is interacting and ensure the preview
+    // redraws with the new camera state.
+    m_preview_rotate = false;
+    m_preview_dirty = true;
+  } else if (m_preview_gizmo.is_hovered ()) {
+    // Hover highlights are baked into the preview texture, so a redraw is
+    // needed when the highlight moves.
+    m_preview_dirty = true;
+  }
+
+  m_preview_gizmo_layout = layout;
+  m_preview_gizmo_visible = true;
 }
 
 void

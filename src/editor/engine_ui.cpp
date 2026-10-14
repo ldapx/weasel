@@ -114,6 +114,10 @@ engine_ui::build_draw_data (entt::registry &registry)
   }
 
   m_editor_ctx->get_imgui_renderer ()->begin_frame ();
+  // Rebuilt from scratch while the editor windows draw; the 3D render pass
+  // reads it back to draw the widgets.
+  m_editor_ctx->view_gizmo_visible (false);
+  m_editor_ctx->transform_gizmo_visible (false);
   m_root.draw (registry, m_runtime_ctx->window ());
 
   TracyPlot ("FPS", ImGui::GetIO ().Framerate);

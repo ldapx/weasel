@@ -12,6 +12,7 @@
 #include "wsl/gfx/imgui_renderer_interface.hpp"
 #include "wsl/gfx/render_window.hpp"
 #include "wsl/gfx/render_context.hpp"
+#include "wsl/gfx/view_gizmo.hpp"
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_sdlgpu3.h>
 
@@ -44,10 +45,8 @@ public:
 
   void on_resize (uint32_t w, uint32_t h) override;
 
-  void preview_set_camera_from_gizmo (const glm::vec3 &pos,
-                                      const glm::quat &rot) override;
-  void preview_get_camera (glm::vec3 &out_pos,
-                           glm::quat &out_rot) const override;
+  void preview_navigate (const wsl::gfx::view_gizmo_input &input,
+                         const wsl::gfx::view_gizmo_layout &layout) override;
   void preview_reset_camera_to_default () override;
 
   SDL_GPUTexture *get_model_preview_texture () const override;
@@ -104,6 +103,12 @@ private:
 
   glm::vec3 m_preview_cam_pos{ 0.0F, 0.0F, 5.0F };
   glm::quat m_preview_cam_rot{ 1.0F, 0.0F, 0.0F, 0.0F };
+
+  // Preview view navigation widget. Input arrives through `preview_navigate`
+  // and the overlay is drawn while the preview pass is being recorded.
+  wsl::gfx::view_gizmo m_preview_gizmo;
+  wsl::gfx::view_gizmo_layout m_preview_gizmo_layout;
+  bool m_preview_gizmo_visible = false;
 
   glm::vec3 m_preview_default_pos{ 0.0F, 0.0F, 5.0F };
   glm::quat m_preview_default_rot{ 1.0F, 0.0F, 0.0F, 0.0F };

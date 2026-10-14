@@ -3,6 +3,8 @@
 #include "wsl/comp/component_meta.hpp"
 #include "wsl/comp/singl/engine_resources.hpp"
 #include "wsl/comp/singl/runtime_context_fwd.hpp"
+#include "wsl/gfx/transform_gizmo.hpp"
+#include "wsl/gfx/view_gizmo.hpp"
 #include "wsl/input.hpp"
 #include "wsl/comp/camera.hpp"
 #include "wsl/comp/camera_2d.hpp"
@@ -467,6 +469,76 @@ public:
     m_grid_fog_radius = val;
   }
 
+  // View navigation widget (view gizmo) shared between the editor UI and the
+  // 3D render pass that draws it.
+  wsl::gfx::view_gizmo &
+  view_gizmo_widget ()
+  {
+    return m_view_gizmo_widget;
+  }
+  const wsl::gfx::view_gizmo &
+  view_gizmo_widget () const
+  {
+    return m_view_gizmo_widget;
+  }
+
+  wsl::gfx::view_gizmo_layout const &
+  view_gizmo_layout () const
+  {
+    return m_view_gizmo_layout;
+  }
+  void
+  view_gizmo_layout (wsl::gfx::view_gizmo_layout const &val)
+  {
+    m_view_gizmo_layout = val;
+  }
+
+  bool
+  view_gizmo_visible () const
+  {
+    return m_view_gizmo_visible;
+  }
+  void
+  view_gizmo_visible (bool val)
+  {
+    m_view_gizmo_visible = val;
+  }
+
+  // Transform manipulation widget (translate/rotate/scale) shared between
+  // the editor UI and the 3D render pass that draws it.
+  wsl::gfx::transform_gizmo &
+  transform_gizmo_widget ()
+  {
+    return m_transform_gizmo_widget;
+  }
+  const wsl::gfx::transform_gizmo &
+  transform_gizmo_widget () const
+  {
+    return m_transform_gizmo_widget;
+  }
+
+  wsl::gfx::transform_gizmo_mode
+  gizmo_mode () const
+  {
+    return m_gizmo_mode;
+  }
+  void
+  gizmo_mode (wsl::gfx::transform_gizmo_mode val)
+  {
+    m_gizmo_mode = val;
+  }
+
+  bool
+  transform_gizmo_visible () const
+  {
+    return m_transform_gizmo_visible;
+  }
+  void
+  transform_gizmo_visible (bool val)
+  {
+    m_transform_gizmo_visible = val;
+  }
+
   // -------- Camera resolve helper --------
   class resolved_camera
   {
@@ -741,6 +813,18 @@ private:
   glm::vec3 m_grid_camera_pos{ 0.0F };
   glm::vec3 m_grid_fog_center{ 0.0F };
   float m_grid_fog_radius = 400.0F;
+
+  // The editor UI refreshes the view gizmo placement each frame; the 3D
+  // render pass consumes it to draw the widget.
+  wsl::gfx::view_gizmo m_view_gizmo_widget;
+  wsl::gfx::view_gizmo_layout m_view_gizmo_layout;
+  bool m_view_gizmo_visible = false;
+
+  // Transform manipulation widget state shared with the 3D render pass.
+  wsl::gfx::transform_gizmo m_transform_gizmo_widget;
+  wsl::gfx::transform_gizmo_mode m_gizmo_mode
+      = wsl::gfx::transform_gizmo_mode::translate;
+  bool m_transform_gizmo_visible = false;
 
   camera_anim m_cam_anim;
 

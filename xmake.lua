@@ -130,20 +130,6 @@ package("imsearch")
     end)
 package_end()
 
--- ImViewGuizmo (Mario1159/ImViewGuizmo) — header-only-ish
-package("imviewguizmo")
-    set_kind("library", {headeronly = true})
-    set_homepage("https://github.com/Mario1159/ImViewGuizmo")
-    set_description("ImViewGuizmo")
-    add_urls("https://github.com/Mario1159/ImViewGuizmo.git")
-    add_versions("main", "main")
-    on_install(function (package)
-        os.cp("*.h", package:installdir("include"))
-        os.cp("*.hpp", package:installdir("include"))
-        if os.isdir("include") then os.cp("include/**.h", package:installdir("include")) end
-    end)
-package_end()
-
 -- ImGizmo2D (Miisan-png/ImGizmo2D) — header-only
 package("imgizmo2d")
     set_kind("library", {headeronly = true})
@@ -363,67 +349,12 @@ package("ozz-animation")
     end)
 package_end()
 
--- imguizmo override to force docking imgui
-package("imguizmo")
-    set_homepage("https://github.com/CedricGuillemet/ImGuizmo")
-    set_description("Immediate mode 3D gizmo for scene editing and other controls based on Dear Imgui")
-    set_license("MIT")
-    add_urls("https://github.com/CedricGuillemet/ImGuizmo.git")
-    add_versions("1.91.3+wip", "bcdd86bb8a8019b373e46921c52ef7f2fdaa8b16")
-    on_load(function (package)
-        package:add("deps", "imgui v1.92.9-docking", {configs = {sdl3 = true, sdl3_renderer = true, sdl3_gpu = true, shared = false}})
-    end)
-    on_install("linux", "macosx", "windows", "mingw", function (package)
-        local imgui = package:dep("imgui")
-        local configs = imgui:requireinfo() and imgui:requireinfo().configs
-        if configs then
-            configs = string.serialize(configs, {strip = true, indent = false})
-        else
-            configs = "{}"
-        end
-        local xmake_lua = ([[
-            add_rules("mode.debug", "mode.release")
-            set_languages("c++14")
-            add_requires("imgui %s", {configs = %s})
-            target("imguizmo")
-                set_kind("$(kind)")
-                add_defines("IMGUI_DEFINE_MATH_OPERATORS")
-                add_files("*.cpp")
-                add_headerfiles("*.h")
-                add_packages("imgui")
-                if is_plat("windows") and is_kind("shared") then
-                    add_rules("utils.symbols.export_all", {export_classes = true})
-                end
-        ]]):format(imgui:version_str(), configs)
-        io.writefile("xmake.lua", xmake_lua)
-        -- ImGuizmo 1.91.3+wip predates imgui 1.92.8, which swapped the
-        -- 'thickness' and 'flags' parameters of AddPolyline(). The source
-        -- still passes `true`/`false` (old ImDrawFlags_Closed) in the
-        -- thickness slot; bool->float converts silently and the float
-        -- thickness gets truncated into the flags int, tripping imgui's
-        -- parameter validation on every gizmo draw. Rewrite to the new
-        -- argument order.
-        local imguizmo_cpp = "ImGuizmo.cpp"
-        io.gsub(imguizmo_cpp,
-                "colors%[3 %- axis%], false, gContext",
-                "colors[3 - axis], gContext")
-        io.gsub(imguizmo_cpp,
-                "GetColorU32%(ROTATION_USING_BORDER%), true, gContext%.mStyle%.RotationLineThickness",
-                "GetColorU32(ROTATION_USING_BORDER), gContext.mStyle.RotationLineThickness, ImDrawFlags_Closed")
-        io.gsub(imguizmo_cpp,
-                "GetColorU32%(DIRECTION_X %+ i%), true, 1%.0f",
-                "GetColorU32(DIRECTION_X + i), 1.0f, ImDrawFlags_Closed")
-        import("package.tools.xmake").install(package)
-    end)
-package_end()
-
 -- rapidjson override: upstream xmake-repo pins the install check to
 -- c++11, which MSVC 14.44+ STL rejects (deduced `auto` returns need
 -- C++14; cl offers no C++11 mode at all). rapidjson itself is plain
 -- C++11-compatible code and works on Windows — only the recipe's check
 -- standard is wrong. Checking as c++17 is strictly stronger and valid
--- on every toolchain. (Same project-shadows-repo mechanism as the
--- imguizmo override above.)
+-- on every toolchain. (Project-shadows-repo package override.)
 package("rapidjson")
     set_kind("library", {headeronly = true})
     set_homepage("https://github.com/Tencent/rapidjson")
@@ -658,7 +589,6 @@ add_requires("libsdl3_image 3.4.0", {configs = {shared = false}})
 add_requires("libsdl3_mixer 3.2.4", {configs = {shared = false}})
 add_requires("tracy v0.13.1", {configs = {on_demand = true, tracy_enable = true, shared = false}})
 add_requires("imgui v1.92.9-docking", {configs = {shared = false, sdl3 = true, sdl3_renderer = true, sdl3_gpu = true}})
-add_requires("imguizmo", {configs = {shared = false}})
 add_requires("stb")
 add_requires("cli11 v2.6.2")
 add_requires("nlohmann_json v3.12.0")
@@ -685,7 +615,6 @@ end
 
 -- Editor-only custom packages — mark optional so config can succeed even if they fail
 add_requires("imsearch", {optional = true})
-add_requires("imviewguizmo", {optional = true})
 add_requires("imgizmo2d", {optional = true})
 add_requires("imnodeflow", {optional = true})
 add_requires("imguitextselect", {optional = true})
@@ -842,7 +771,7 @@ target("wsl")
     add_cxxflags("-Wall", "-Wextra", "-Wpedantic", "-rdynamic", {force = true})
 
     -- packages — core deps (slang/gns/daslang conditional)
-    add_packages("entt", "glm", "spdlog", "fmt", "reflect-cpp", "box3d", "rmlui", "fastgltf", "meshoptimizer", "simdjson", "libsdl3", "libsdl3_image", "libsdl3_mixer", "tracy", "imgui", "imguizmo", "stb", "nlohmann_json", "libarchive", "rapidjson", {public = false})
+    add_packages("entt", "glm", "spdlog", "fmt", "reflect-cpp", "box3d", "rmlui", "fastgltf", "meshoptimizer", "simdjson", "libsdl3", "libsdl3_image", "libsdl3_mixer", "tracy", "imgui", "stb", "nlohmann_json", "libarchive", "rapidjson", {public = false})
     add_defines("REFLECT_CPP_C_ARRAYS_OR_INHERITANCE", {public = true})
     if has_config("with_slang") then add_packages("slang") end
     -- Public packages exported to downstream targets (editor, cli, mcp-server, tests)
@@ -864,7 +793,6 @@ target("wsl")
     add_packages("libsdl3_mixer", {public = true})
     add_packages("stb", {public = true})
     add_packages("nlohmann_json", {public = true})
-    add_packages("imguizmo", {public = true})
     add_packages("ozz-animation", {public = true})
 
     if is_config("weasel_enable_multiplayer", true) then
@@ -887,7 +815,6 @@ target("wsl")
     -- editor UI helpers that wsl links (mirrors CMake wsl target) — optional
     add_packages("imguitextselect", {optional = true})
     add_packages("imsearch", {optional = true})
-    add_packages("imviewguizmo", {optional = true})
     add_packages("imguicolortextedit", {optional = true})
 
     -- link system libs (AF_UNIX sockets need ws2_32 on Windows)
@@ -1220,7 +1147,6 @@ target("weasel")
     add_packages("agentsdk")
     add_packages("imguitextselect", {optional = true})
     add_packages("imsearch", {optional = true})
-    add_packages("imviewguizmo", {optional = true})
     add_packages("imguicolortextedit", {optional = true})
     add_packages("imgizmo2d", {optional = true})
     add_packages("imnodeflow", {optional = true})

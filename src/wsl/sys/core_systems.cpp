@@ -972,6 +972,13 @@ core_systems::render_impl (wsl::gfx::render_window &window,
         }
 
         {
+          // Draw editor overlays that must bypass tone mapping into the
+          // final present texture.
+          ZoneScopedN ("render_impl::renderer_flush_overlays");
+          renderer->flush_debug_overlay ();
+        }
+
+        {
           ZoneScopedN ("render_impl::renderer_end_frame");
           renderer->end_frame ();
         }

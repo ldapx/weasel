@@ -3,7 +3,10 @@
 #include "../comp/directional_light.hpp"
 #include "../comp/singl/editor_context.hpp"
 #include "../comp/singl/runtime_context.hpp"
+#include "../gfx/debug_overlay.hpp"
 #include "../gfx/scene_renderer.hpp"
+#include "../gfx/transform_gizmo.hpp"
+#include "../gfx/view_gizmo.hpp"
 #include "comp/camera.hpp"
 #include "comp/world_transform.hpp"
 #include <cmath>
@@ -12,7 +15,9 @@
 #include <glm/ext/vector_float3.hpp>
 #include <glm/ext/vector_float4.hpp>
 #include <glm/geometric.hpp>
+#include <glm/matrix.hpp>
 #include <glm/trigonometric.hpp>
+#include <utility>
 #include <vector>
 
 namespace wsl
@@ -20,6 +25,48 @@ namespace wsl
 
 namespace sys
 {
+
+namespace
+{
+
+/**
+ * Projects a world-space segment into normalized device coordinates.
+ *
+ * Endpoints behind the near plane are clipped against ``w = 1e-3`` so the
+ * perspective divide stays finite.
+ *
+ * :param view_proj: View-projection matrix of the active frame.
+ * :param a: World-space start point.
+ * :param b: World-space end point.
+ * :param out_a: Receives the projected start point.
+ * :param out_b: Receives the projected end point.
+ * :return: ``false`` when the segment lies completely behind the camera.
+ */
+bool
+project_segment (const glm::mat4 &view_proj, const glm::vec3 &a,
+                 const glm::vec3 &b, glm::vec2 &out_a, glm::vec2 &out_b)
+{
+  constexpr float near_w = 1.0e-3F;
+  glm::vec4 clip_a = view_proj * glm::vec4 (a, 1.0F);
+  glm::vec4 clip_b = view_proj * glm::vec4 (b, 1.0F);
+
+  if ((clip_a.w <= near_w) && (clip_b.w <= near_w)) {
+    return false;
+  }
+  if (clip_a.w <= near_w) {
+    clip_a = glm::mix (clip_a, clip_b,
+                       (near_w - clip_a.w) / (clip_b.w - clip_a.w));
+  } else if (clip_b.w <= near_w) {
+    clip_b = glm::mix (clip_b, clip_a,
+                       (near_w - clip_b.w) / (clip_a.w - clip_b.w));
+  }
+
+  out_a = glm::vec2 (clip_a.x / clip_a.w, clip_a.y / clip_a.w);
+  out_b = glm::vec2 (clip_b.x / clip_b.w, clip_b.y / clip_b.w);
+  return true;
+}
+
+} // namespace
 
 void
 render_3d_system::on_render_record_draw_cmd (entt::registry &registry)
@@ -52,8 +99,9 @@ render_3d_system::on_render_record_draw_cmd (entt::registry &registry)
                            editor_ctx.grid_fog_radius ());
     }
 
-    // Draw camera gizmos in the 3D pass (editor-only, not tied to physics
-    // debug)
+    // Editor camera and light gizmos are projected to screen space and
+    // queued for the post-tonemap overlay pass below. Depth-tested
+    // decorations such as the grid stay in the 3D pass.
     if ((renderer != nullptr)
         && ctx.contains<comp::singl::runtime_context *> ()) {
       auto &runtime_ctx = *ctx.get<comp::singl::runtime_context *> ();
@@ -69,9 +117,31 @@ render_3d_system::on_render_record_draw_cmd (entt::registry &registry)
         glm::vec4 const selected_color = glm::vec4 (
             255.0F / 255.0F, 185.0F / 255.0F, 80.0F / 255.0F, 1.0F);
 
+        // Camera and light gizmos are projected to screen space and queued
+        // for the renderer's post-tonemap overlay pass, so their colors are
+        // not affected by exposure, bloom, or gamma encoding.
+        const glm::vec2 target_size = renderer->render_target_size ();
+        gfx::overlay_transform gizmo_transform;
+        gizmo_transform.ndc_per_pixel
+            = glm::vec2 (2.0F / target_size.x, -2.0F / target_size.y);
+        gizmo_transform.pixels_per_unit = 1.0F;
+
+        std::vector<gfx::overlay_vertex> overlay;
+        gfx::overlay_builder overlay_lines (overlay, gizmo_transform);
+
+        const glm::mat4 &view_proj = renderer->frame_view ().view_proj;
+        auto push_segment = [&overlay_lines, &gizmo_transform, &view_proj] (
+                                const glm::vec3 &a, const glm::vec3 &b,
+                                const glm::vec4 &color) {
+          glm::vec2 ndc_a;
+          glm::vec2 ndc_b;
+          if (project_segment (view_proj, a, b, ndc_a, ndc_b)) {
+            overlay_lines.line (gizmo_transform.to_local (ndc_a),
+                                gizmo_transform.to_local (ndc_b), 1.0F, color);
+          }
+        };
+
         auto view = registry.view<comp::camera, comp::world_transform> ();
-        std::vector<gfx::scene_renderer::debug_vertex> lines;
-        lines.reserve (256);
 
         for (entt::entity const entity : view) {
           if (have_rc && !rc.using_engine_default ()
@@ -138,21 +208,16 @@ render_3d_system::on_render_record_draw_cmd (entt::registry &registry)
                                     ? selected_color
                                     : default_color;
 
-          auto push_line
-              = [&lines, col] (const glm::vec3 &a, const glm::vec3 &b) {
-                  lines.push_back (gfx::scene_renderer::debug_vertex{ a, col });
-                  lines.push_back (gfx::scene_renderer::debug_vertex{ b, col });
-                };
-
-          push_line (origin - right * origin_extent,
-                     origin + right * origin_extent);
-          push_line (origin - up * origin_extent, origin + up * origin_extent);
-          push_line (origin - forward * origin_extent,
-                     origin + forward * origin_extent);
+          push_segment (origin - right * origin_extent,
+                        origin + right * origin_extent, col);
+          push_segment (origin - up * origin_extent,
+                        origin + up * origin_extent, col);
+          push_segment (origin - forward * origin_extent,
+                        origin + forward * origin_extent, col);
 
           for (int i = 0; i < 4; ++i) {
-            push_line (quad[i], quad[(i + 1) % 4]);
-            push_line (origin, quad[i]);
+            push_segment (quad[i], quad[(i + 1) % 4], col);
+            push_segment (origin, quad[i], col);
           }
         }
 
@@ -198,33 +263,53 @@ render_3d_system::on_render_record_draw_cmd (entt::registry &registry)
                                     ? selected_color
                                     : light_default_color;
 
-          auto push_light_line
-              = [&lines, col] (const glm::vec3 &a, const glm::vec3 &b) {
-                  lines.push_back (gfx::scene_renderer::debug_vertex{ a, col });
-                  lines.push_back (gfx::scene_renderer::debug_vertex{ b, col });
-                };
-
           // '+' at the light origin.
-          push_light_line (origin - side * origin_extent,
-                           origin + side * origin_extent);
-          push_light_line (origin - up * origin_extent,
-                           origin + up * origin_extent);
-          push_light_line (origin - dir * origin_extent,
-                           origin + dir * origin_extent);
+          push_segment (origin - side * origin_extent,
+                        origin + side * origin_extent, col);
+          push_segment (origin - up * origin_extent,
+                        origin + up * origin_extent, col);
+          push_segment (origin - dir * origin_extent,
+                        origin + dir * origin_extent, col);
 
           // Arrow along the light direction with a 4-line star head.
           glm::vec3 const tip = origin + dir * shaft;
           glm::vec3 const base = tip - dir * head;
-          push_light_line (origin, tip);
-          push_light_line (tip, base + side * head);
-          push_light_line (tip, base - side * head);
-          push_light_line (tip, base + up * head);
-          push_light_line (tip, base - up * head);
+          push_segment (origin, tip, col);
+          push_segment (tip, base + side * head, col);
+          push_segment (tip, base - side * head, col);
+          push_segment (tip, base + up * head, col);
+          push_segment (tip, base - up * head, col);
         }
 
-        if (!lines.empty ()) {
-          renderer->draw_debug_lines (lines, renderer->frame_view ().view_proj);
+        // View navigation gizmo: built by the editor UI and appended to the
+        // same post-tonemap overlay batch.
+        if (editor_ctx.view_gizmo_visible ()
+            && (editor_ctx.view_gizmo_layout ().scale > 0.0F)) {
+          gfx::view_gizmo_camera gizmo_camera;
+          gizmo_camera.position = editor_ctx.editor_cam_pos ();
+          gizmo_camera.rotation = editor_ctx.editor_cam_rot ();
+          editor_ctx.view_gizmo_widget ().build_overlay (
+              gizmo_camera, editor_ctx.view_gizmo_layout (), overlay);
         }
+
+        // Transform manipulation gizmo: drawn on top of everything else so
+        // its handles stay reachable.
+        if (editor_ctx.transform_gizmo_visible ()
+            && (editor_ctx.gizmo_mode () != gfx::transform_gizmo_mode::none)) {
+          const entt::entity selected = editor_ctx.selected_entity ();
+          if ((selected != entt::null)
+              && registry.all_of<comp::world_transform> (selected)) {
+            const glm::mat4 target
+                = registry.get<comp::world_transform> (selected).value ();
+            editor_ctx.transform_gizmo_widget ().build_overlay (
+                target, editor_ctx.gizmo_mode (),
+                renderer->frame_view ().view_proj,
+                renderer->frame_view ().world_position,
+                renderer->render_target_size (), overlay);
+          }
+        }
+
+        renderer->queue_debug_overlay (std::move (overlay));
       }
     }
   }

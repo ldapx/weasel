@@ -3,6 +3,7 @@
 #include "wsl/gfx/render_window.hpp"
 #include "clustered_lighting.hpp"
 #include "cubemap.hpp"
+#include "debug_overlay.hpp"
 #include "lighting.hpp"
 #include "mesh.hpp"
 #include "model_3d.hpp"
@@ -226,7 +227,10 @@ public:
   void draw_grid (const glm::vec3 &camera_pos, const glm::vec3 &fog_center,
                   float fog_radius);
 
-  // Immediate debug line drawing (world-space lines rendered with depth/write)
+  /**
+   * Immediate debug line drawing (world-space lines rendered with depth test
+   * and depth writes enabled).
+   */
   struct debug_vertex
   {
     glm::vec3 pos;
@@ -234,6 +238,48 @@ public:
   };
   void draw_debug_lines (const std::vector<debug_vertex> &verts,
                          const glm::mat4 &vp);
+
+  /** How debug overlay geometry is composited into the active pass. */
+  enum class overlay_blending : uint8_t
+  {
+    /** Blend by source alpha so the scene color shows through. */
+    blend,
+    /**
+     * Write straight RGBA, replacing the destination. Use for targets that
+     * store straight alpha and are composited later (e.g. model previews).
+     */
+    write,
+  };
+
+  /**
+   * Draws screen-space triangles into the active pass, ignoring depth.
+   *
+   * Vertices are already in normalized device coordinates. The bloom source
+   * target is always left untouched.
+   *
+   * :param verts: Overlay geometry to draw.
+   * :param blending: How the geometry is composited.
+   */
+  void draw_debug_overlay (const std::vector<overlay_vertex> &verts,
+                           overlay_blending blending = overlay_blending::blend);
+
+  /**
+   * Queues screen-space overlay geometry for the post-tonemap pass.
+   *
+   * Use for editor widgets whose colors must reach the final image
+   * unchanged. The geometry is drawn by :cpp:func:`flush_debug_overlay` after
+   * the scene has been tone mapped into the present texture, so it is not
+   * affected by exposure, bloom, or gamma encoding.
+   */
+  void queue_debug_overlay (std::vector<overlay_vertex> verts);
+
+  /**
+   * Draws queued overlay geometry into the present texture.
+   *
+   * Call once per frame after postprocessing has run. Pending geometry is
+   * discarded when the frame ends.
+   */
+  void flush_debug_overlay ();
 
   /** Uploads the frame lighting buffer. */
   void upload_lighting (const lighting_ubo &lighting);
@@ -266,6 +312,9 @@ public:
   void set_camera_position (const glm::vec3 &position);
   /** Returns the camera position used by shading. */
   [[nodiscard]] auto camera_position () const -> const glm::vec3 &;
+
+  /** Returns the size of the active render target in pixels. */
+  [[nodiscard]] auto render_target_size () const -> glm::vec2;
 
   /** Forces subsequent model draws to use the unlit material path. */
   void set_force_unlit (bool enabled);
@@ -605,6 +654,16 @@ private:
   // Debug line pipeline (for editor gizmos)
   SDL_GPUGraphicsPipeline *m_pipeline_debug_lines = nullptr;
 
+  // Screen-space debug overlay pipeline (for editor overlays)
+  SDL_GPUGraphicsPipeline *m_pipeline_debug_overlay = nullptr;
+  // Straight-alpha variant used when the target is composited later.
+  SDL_GPUGraphicsPipeline *m_pipeline_debug_overlay_write = nullptr;
+  // Post-tonemap variant for the LDR present texture.
+  SDL_GPUGraphicsPipeline *m_pipeline_debug_overlay_ldr = nullptr;
+
+  /** Overlay geometry waiting for the post-tonemap pass. */
+  std::vector<overlay_vertex> m_debug_overlay_queue;
+
   // Grid resources.
   /** Graphics pipeline for the procedural projected grid. */
   SDL_GPUGraphicsPipeline *m_pipeline_grid = nullptr;
@@ -647,6 +706,48 @@ private:
 
   /** Uploads the active palette to a vertex uniform slot, if any. */
   void push_active_palette (SDL_GPUCommandBuffer *cmd, uint32_t slot);
+
+  /**
+   * Creates a pipeline for debug geometry using the flat shader.
+   *
+   * :param primitive: Primitive topology to rasterize.
+   * :param depth_test: When true, tests and writes the scene depth buffer.
+   * :param color_blend: When true, blends the scene color by source alpha;
+   *   when false, writes the color as-is.
+   * :param keep_bloom: When true, keeps the destination on the bloom source
+   *   target instead of overwriting it with the shader's black output.
+   * :return: Created pipeline, or ``nullptr`` on shader/pipeline failure.
+   */
+  [[nodiscard]] SDL_GPUGraphicsPipeline *
+  create_debug_pipeline (SDL_GPUPrimitiveType primitive, bool depth_test,
+                         bool color_blend, bool keep_bloom);
+
+  /**
+   * Creates the overlay pipeline used to draw into the LDR present texture.
+   *
+   * :return: Created pipeline, or ``nullptr`` on shader/pipeline failure.
+   */
+  [[nodiscard]] SDL_GPUGraphicsPipeline *create_ldr_overlay_pipeline ();
+
+  /** Creates the debug line pipeline on first use. */
+  void ensure_debug_lines_pipeline ();
+  /** Creates the screen-space debug overlay pipeline on first use. */
+  void ensure_debug_overlay_pipeline (overlay_blending blending);
+  /** Creates the post-tonemap (LDR) overlay pipeline on first use. */
+  void ensure_ldr_overlay_pipeline ();
+  /** Releases the debug line and overlay pipelines. */
+  void destroy_debug_pipelines ();
+
+  /**
+   * Uploads a transient vertex buffer through a dedicated copy pass.
+   *
+   * :param data: Vertex data to upload.
+   * :param size: Size of *data* in bytes.
+   * :return: The GPU buffer, or ``nullptr`` on failure. The caller owns it
+   *   and releases it after recording the draw that consumes it.
+   */
+  [[nodiscard]] SDL_GPUBuffer *upload_debug_vertices (const void *data,
+                                                      size_t size);
 
   /** Controls which alpha modes render_mesh draws during the current pass. */
   enum class alpha_render_pass : uint8_t

@@ -15,10 +15,10 @@
 #include "wsl/comp/singl/runtime_context.hpp"
 #include "wsl/comp/transform.hpp"
 #include "wsl/comp/world_transform.hpp"
+#include "wsl/gfx/transform_gizmo.hpp"
+#include "wsl/gfx/view_gizmo.hpp"
 #include "wsl/ray.hpp"
 
-#include <ImGuizmo.h>
-#include "imviewguizmo.hpp"
 #include <ImGizmo2D.h>
 #include <algorithm>
 #include <cmath>
@@ -438,20 +438,13 @@ game_view::draw (entt::registry &registry, wsl::gfx::render_window &rw)
       }
 
       if (show_view_gizmo) {
-        ImViewGuizmo::SetContext (0x47414D45U); // 'GAME'
-        ImViewGuizmo::BeginFrame ();
-
-        auto &style = ImViewGuizmo::GetStyle ();
-        style.scale = 0.30F;
-        style.animateSnap = true;
-
-        const float gizmo_diameter = 256.0F * style.scale;
-        const float half = gizmo_diameter * 0.5F;
+        const float gizmo_scale = 0.30F;
+        const float gizmo_half = 128.0F * gizmo_scale;
         const float pad = 8.0F;
 
-        ImVec2 const rotate_center (img_min.x + img_size.x - half - pad,
-                                    img_min.y + half + pad);
-        ImVec2 const tool_anchor = rotate_center;
+        const glm::vec2 view_size (img_size.x, img_size.y);
+        const glm::vec2 gizmo_center (view_size.x - gizmo_half - pad,
+                                      gizmo_half + pad);
 
         glm::vec3 cam_pos = m_editor_ctx->editor_cam_pos ();
         glm::quat cam_rot = m_editor_ctx->editor_cam_rot ();
@@ -477,7 +470,7 @@ game_view::draw (entt::registry &registry, wsl::gfx::render_window &rw)
         if (d2 < min_dist * min_dist) {
           if (d2 < 1e-8F) {
             glm::vec3 forward = cam_rot * glm::vec3 (0.0F, 0.0F, -1.0F);
-            if (glm::length2 (forward) < 1e-8F) {
+            if (glm::dot (forward, forward) < 1e-8F) {
               forward = glm::vec3 (0.0F, 0.0F, -1.0F);
             }
             v = -glm::normalize (forward);
@@ -486,35 +479,52 @@ game_view::draw (entt::registry &registry, wsl::gfx::render_window &rw)
           cam_pos = pivot + ((v / std::sqrt (d2)) * min_dist);
         }
 
-        bool modified = false;
-        modified |= ImViewGuizmo::Rotate (cam_pos, cam_rot, pivot,
-                                          rotate_center, 0.01F);
+        const ImVec2 mouse = ImGui::GetMousePos ();
+        const ImVec2 mouse_delta = ImGui::GetIO ().MouseDelta;
+        const ImVec2 mouse_local (mouse.x - img_min.x, mouse.y - img_min.y);
+        const ImVec2 delta_global (mouse_delta.x, mouse_delta.y);
 
-        ImVec2 btn_pos (tool_anchor.x + half
-                            - ((style.toolButtonRadius * style.scale) * 2.0F),
-                        tool_anchor.y + half + 8.0F);
+        wsl::gfx::view_gizmo_input gizmo_input;
+        gizmo_input.pointer_position = wsl::gfx::view_gizmo_ndc_from_pixel (
+            glm::vec2 (mouse_local.x, mouse_local.y), view_size);
+        gizmo_input.pointer_delta = wsl::gfx::view_gizmo_ndc_delta_from_pixel (
+            glm::vec2 (delta_global.x, delta_global.y), view_size);
+        gizmo_input.delta_time = ImGui::GetIO ().DeltaTime;
+        gizmo_input.primary_down = ImGui::IsMouseDown (ImGuiMouseButton_Left);
+        gizmo_input.primary_released
+            = ImGui::IsMouseReleased (ImGuiMouseButton_Left);
+        gizmo_input.pointer_over_viewport = img_hovered;
 
-        modified |= ImViewGuizmo::Dolly (cam_pos, cam_rot, btn_pos, 0.05F);
+        const wsl::gfx::view_gizmo_layout gizmo_layout
+            = wsl::gfx::view_gizmo_layout::from_pixel_center (
+                gizmo_center, view_size, gizmo_scale);
 
-        btn_pos.y += ((style.toolButtonRadius * style.scale) * 2.0F) + 6.0F;
-        modified |= ImViewGuizmo::Pan (cam_pos, cam_rot, btn_pos, 0.01F);
+        wsl::gfx::view_gizmo_camera gizmo_camera;
+        gizmo_camera.position = cam_pos;
+        gizmo_camera.rotation = cam_rot;
+        gizmo_camera.pivot = pivot;
 
-        if (modified || ImViewGuizmo::IsUsing ()) {
-          m_editor_ctx->editor_cam_pos (cam_pos);
-          m_editor_ctx->editor_cam_rot (cam_rot);
+        const bool modified = m_editor_ctx->view_gizmo_widget ().interact (
+            gizmo_input, gizmo_layout, gizmo_camera);
+
+        if (modified || m_editor_ctx->view_gizmo_widget ().is_active ()) {
+          m_editor_ctx->editor_cam_pos (gizmo_camera.position);
+          m_editor_ctx->editor_cam_rot (gizmo_camera.rotation);
           m_editor_ctx->cancel_editor_camera_anim ();
         }
 
-        block_picking = (ImViewGuizmo::IsUsing () || ImViewGuizmo::IsOver ());
+        // Hand the widget placement to the 3D pass, which draws it with the
+        // scene renderer instead of an ImGui draw list.
+        m_editor_ctx->view_gizmo_layout (gizmo_layout);
+        m_editor_ctx->view_gizmo_visible (true);
+
+        block_picking = (m_editor_ctx->view_gizmo_widget ().is_active ()
+                         || m_editor_ctx->view_gizmo_widget ().is_hovered ());
         block_entity_gizmo = block_picking;
       }
 
       // 3D entity gizmo
       if (!block_entity_gizmo) {
-        ImGuizmo::BeginFrame ();
-        ImGuizmo::SetDrawlist ();
-        ImGuizmo::SetRect (img_min.x, img_min.y, img_size.x, img_size.y);
-
         glm::mat4 view = rc.view ();
         glm::mat4 proj = rc.proj ();
 
@@ -543,52 +553,74 @@ game_view::draw (entt::registry &registry, wsl::gfx::render_window &rw)
           m_editor_ctx->grid_visible (false);
         }
 
+        wsl::gfx::transform_gizmo &gizmo_widget
+            = m_editor_ctx->transform_gizmo_widget ();
+        m_editor_ctx->gizmo_mode (m_current_op);
+
+        entt::entity selected = entt::null;
         if ((m_selection != nullptr)
-            && m_selection->kind == selection_kind::entity
-            && !block_entity_gizmo) {
-          entt::entity const e = m_selection->selected_entity;
+            && m_selection->kind == selection_kind::entity) {
+          selected = m_selection->selected_entity;
+        }
 
-          if (registry.all_of<wsl::comp::transform,
-                              wsl::comp::world_transform> (e)) {
-            wsl::comp::transform &tr = registry.get<wsl::comp::transform> (e);
-            wsl::comp::world_transform const &wt
-                = registry.get<wsl::comp::world_transform> (e);
+        const bool have_target
+            = (selected != entt::null)
+              && registry
+                     .all_of<wsl::comp::transform, wsl::comp::world_transform> (
+                         selected);
 
-            glm::mat4 world = wt.value ();
+        if (have_target
+            && (m_current_op != wsl::gfx::transform_gizmo_mode::none)) {
+          wsl::comp::world_transform const &wt
+              = registry.get<wsl::comp::world_transform> (selected);
+          glm::mat4 world = wt.value ();
 
-            ImGuizmo::SetOrthographic (false);
-            ImGuizmo::Manipulate (glm::value_ptr (view), glm::value_ptr (proj),
-                                  m_current_op, ImGuizmo::WORLD,
-                                  glm::value_ptr (world));
+          const ImVec2 mouse = ImGui::GetMousePos ();
 
-            if (ImGuizmo::IsUsing ()) {
-              glm::mat4 local = world;
+          wsl::gfx::transform_gizmo_input gizmo_input;
+          gizmo_input.view = view;
+          gizmo_input.proj = proj;
+          gizmo_input.camera_position = rc.world_pos ();
+          gizmo_input.viewport_min = glm::vec2 (img_min.x, img_min.y);
+          gizmo_input.viewport_size = glm::vec2 (img_size.x, img_size.y);
+          gizmo_input.pointer_position = glm::vec2 (mouse.x, mouse.y);
+          gizmo_input.pointer_over_viewport = img_hovered;
+          gizmo_input.primary_down = ImGui::IsMouseDown (ImGuiMouseButton_Left);
 
-              if (auto *h = registry.try_get<wsl::comp::hierarchy> (e)) {
-                if (h->parent != entt::null
-                    && registry.all_of<wsl::comp::world_transform> (
-                        h->parent)) {
-                  const wsl::comp::world_transform &pwt
-                      = registry.get<wsl::comp::world_transform> (h->parent);
-                  local = glm::inverse (static_cast<glm::mat4> (pwt.value ()))
-                          * world;
-                }
+          gizmo_widget.manipulate (gizmo_input, m_current_op, world);
+
+          if (gizmo_widget.is_using ()) {
+            wsl::comp::transform &tr
+                = registry.get<wsl::comp::transform> (selected);
+            glm::mat4 local = world;
+
+            if (auto *h = registry.try_get<wsl::comp::hierarchy> (selected)) {
+              if (h->parent != entt::null
+                  && registry.all_of<wsl::comp::world_transform> (h->parent)) {
+                const wsl::comp::world_transform &pwt
+                    = registry.get<wsl::comp::world_transform> (h->parent);
+                local = glm::inverse (static_cast<glm::mat4> (pwt.value ()))
+                        * world;
               }
-
-              glm::vec3 pos;
-              glm::vec3 scl;
-              glm::quat rot;
-              extract_trs (local, pos, rot, scl);
-
-              tr.position = wsl::math::vec3f{ pos };
-              tr.rotation = wsl::math::quatf{ rot };
-              tr.scale = wsl::math::vec3f{ scl };
             }
+
+            glm::vec3 pos;
+            glm::vec3 scl;
+            glm::quat rot;
+            extract_trs (local, pos, rot, scl);
+
+            tr.position = wsl::math::vec3f{ pos };
+            tr.rotation = wsl::math::quatf{ rot };
+            tr.scale = wsl::math::vec3f{ scl };
           }
+
+          m_editor_ctx->transform_gizmo_visible (true);
+        } else {
+          gizmo_widget.reset ();
         }
 
         if (!block_picking) {
-          block_picking = ImGuizmo::IsUsing () || ImGuizmo::IsOver ();
+          block_picking = gizmo_widget.is_using () || gizmo_widget.is_over ();
         }
       }
 
@@ -698,7 +730,7 @@ game_view::draw (entt::registry &registry, wsl::gfx::render_window &rw)
 
         bool modified = false;
         switch (m_current_op) {
-        case ImGuizmo::TRANSLATE: {
+        case wsl::gfx::transform_gizmo_mode::translate: {
           float pos_x = t2d.position.x ();
           float pos_y = t2d.position.y ();
           modified = ImGizmo2D::Translate ("selected", &pos_x, &pos_y);
@@ -708,7 +740,7 @@ game_view::draw (entt::registry &registry, wsl::gfx::render_window &rw)
           }
           break;
         }
-        case ImGuizmo::ROTATE: {
+        case wsl::gfx::transform_gizmo_mode::rotate: {
           float angle = t2d.rotation;
           modified = ImGizmo2D::Rotate ("selected", &t2d.position.x (),
                                         &t2d.position.y (), &angle);
@@ -717,7 +749,7 @@ game_view::draw (entt::registry &registry, wsl::gfx::render_window &rw)
           }
           break;
         }
-        case ImGuizmo::SCALE: {
+        case wsl::gfx::transform_gizmo_mode::scale: {
           float sx = t2d.scale.x ();
           float sy = t2d.scale.y ();
           modified = ImGizmo2D::Scale ("selected", &t2d.position.x (),
@@ -799,13 +831,13 @@ game_view::draw (entt::registry &registry, wsl::gfx::render_window &rw)
   // Tool shortcuts (shared between 3D and 2D edit modes)
   if (ImGui::IsWindowFocused (ImGuiFocusedFlags_RootAndChildWindows)) {
     if (ImGui::IsKeyPressed (ImGuiKey_W)) {
-      m_current_op = ImGuizmo::TRANSLATE;
+      m_current_op = wsl::gfx::transform_gizmo_mode::translate;
     }
     if (ImGui::IsKeyPressed (ImGuiKey_E)) {
-      m_current_op = ImGuizmo::ROTATE;
+      m_current_op = wsl::gfx::transform_gizmo_mode::rotate;
     }
     if (ImGui::IsKeyPressed (ImGuiKey_R)) {
-      m_current_op = ImGuizmo::SCALE;
+      m_current_op = wsl::gfx::transform_gizmo_mode::scale;
     }
   }
 
@@ -949,24 +981,26 @@ game_view::draw_camera_header (entt::registry &registry,
   ImGui::Dummy (ImVec2 (8.0F, 0.0F));
   ImGui::SameLine ();
 
-  auto toggle_op = [this] (ImGuizmo::OPERATION op) {
-    m_current_op = (m_current_op == op) ? (ImGuizmo::OPERATION)0 : op;
+  auto toggle_op = [this] (wsl::gfx::transform_gizmo_mode op) {
+    m_current_op
+        = (m_current_op == op) ? wsl::gfx::transform_gizmo_mode::none : op;
   };
 
   if (runtime_ctx.is_running ()) {
     ImGui::BeginDisabled ();
   }
 
-  const bool tr_on = (m_current_op == ImGuizmo::TRANSLATE);
-  const bool rot_on = (m_current_op == ImGuizmo::ROTATE);
-  const bool scl_on = (m_current_op == ImGuizmo::SCALE);
+  const bool tr_on
+      = (m_current_op == wsl::gfx::transform_gizmo_mode::translate);
+  const bool rot_on = (m_current_op == wsl::gfx::transform_gizmo_mode::rotate);
+  const bool scl_on = (m_current_op == wsl::gfx::transform_gizmo_mode::scale);
 
   bool clicked_tr = false;
   draw_icon_button (m_editor_ctx, m_editor_ctx->icon_translate (),
                     "Translate (W)", &clicked_tr, !runtime_ctx.is_running (),
                     tr_on, btn_size);
   if (clicked_tr) {
-    toggle_op (ImGuizmo::TRANSLATE);
+    toggle_op (wsl::gfx::transform_gizmo_mode::translate);
   }
 
   ImGui::SameLine ();
@@ -975,7 +1009,7 @@ game_view::draw_camera_header (entt::registry &registry,
   draw_icon_button (m_editor_ctx, m_editor_ctx->icon_rotate (), "Rotate (E)",
                     &clicked_rot, !runtime_ctx.is_running (), rot_on, btn_size);
   if (clicked_rot) {
-    toggle_op (ImGuizmo::ROTATE);
+    toggle_op (wsl::gfx::transform_gizmo_mode::rotate);
   }
 
   ImGui::SameLine ();
@@ -984,7 +1018,7 @@ game_view::draw_camera_header (entt::registry &registry,
   draw_icon_button (m_editor_ctx, m_editor_ctx->icon_scale (), "Scale (R)",
                     &clicked_scl, !runtime_ctx.is_running (), scl_on, btn_size);
   if (clicked_scl) {
-    toggle_op (ImGuizmo::SCALE);
+    toggle_op (wsl::gfx::transform_gizmo_mode::scale);
   }
 
   ImGui::SameLine ();

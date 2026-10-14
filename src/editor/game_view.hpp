@@ -3,9 +3,9 @@
 #include "wsl/comp/singl/runtime_context_fwd.hpp"
 #include <SDL3/SDL_gpu.h>
 #include <imgui.h>
-#include <ImGuizmo.h>
 
 #include "wsl/gfx/render_window.hpp"
+#include "wsl/gfx/transform_gizmo.hpp"
 #include "inspector.hpp"
 #include "ecs_inspector_utils.hpp"
 #include "wsl/gfx/mesh.hpp"
@@ -44,7 +44,8 @@ private:
 
   float m_toolbar_height = -1.0F;
   bool m_show_grid = true;
-  ImGuizmo::OPERATION m_current_op = ImGuizmo::TRANSLATE;
+  wsl::gfx::transform_gizmo_mode m_current_op
+      = wsl::gfx::transform_gizmo_mode::translate;
 };
 
 } // namespace editor

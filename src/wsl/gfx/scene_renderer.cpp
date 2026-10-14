@@ -271,6 +271,7 @@ gfx::scene_renderer::end_frame ()
   ZoneScoped;
   m_active_view = view_state{};
   m_visible_draws.clear ();
+  m_debug_overlay_queue.clear ();
 }
 
 auto
@@ -466,6 +467,296 @@ gfx::scene_renderer::run_clustered_lighting (
              (int64_t)std::min<size_t> (cluster_lights.size (), 4096));
 }
 
+SDL_GPUGraphicsPipeline *
+gfx::scene_renderer::create_debug_pipeline (SDL_GPUPrimitiveType primitive,
+                                            bool depth_test, bool color_blend,
+                                            bool keep_bloom)
+{
+  auto vert_id = m_res_mgr->register_shader (
+      "engine://compiled_shaders/flat.vert.slang.spv");
+  auto frag_id = m_res_mgr->register_shader (
+      "engine://compiled_shaders/flat.frag.slang.spv");
+
+  SDL_GPUShader *vert = gfx::shader::load_from_manager (
+      m_ctx->gpu_device, m_res_mgr, vert_id, SDL_GPU_SHADERSTAGE_VERTEX, 1, 0);
+  SDL_GPUShader *frag
+      = gfx::shader::load_from_manager (m_ctx->gpu_device, m_res_mgr, frag_id,
+                                        SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0);
+
+  if ((vert == nullptr) || (frag == nullptr)) {
+    if (vert != nullptr) {
+      SDL_ReleaseGPUShader (m_ctx->gpu_device, vert);
+    }
+    if (frag != nullptr) {
+      SDL_ReleaseGPUShader (m_ctx->gpu_device, frag);
+    }
+    return nullptr;
+  }
+
+  SDL_GPUGraphicsPipelineCreateInfo pi{};
+  SDL_zero (pi);
+  pi.vertex_shader = vert;
+  pi.fragment_shader = frag;
+  pi.primitive_type = primitive;
+
+  // Debug geometry is never culled so slices and handles stay visible from
+  // every angle.
+  pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+  pi.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+
+  pi.target_info.has_depth_stencil_target = true;
+  pi.target_info.depth_stencil_format = m_window->depth_format ();
+  pi.depth_stencil_state.enable_depth_test = depth_test;
+  pi.depth_stencil_state.enable_depth_write = depth_test;
+  if (depth_test) {
+    pi.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+  }
+
+  // Color targets (match main renderer)
+  SDL_GPUColorTargetDescription ctd[2]{};
+  ctd[0].format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+  ctd[1].format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+
+  if (color_blend) {
+    ctd[0].blend_state.enable_blend = true;
+    ctd[0].blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+    ctd[0].blend_state.dst_color_blendfactor
+        = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    ctd[0].blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+    ctd[0].blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+    ctd[0].blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO;
+    ctd[0].blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+  }
+
+  if (keep_bloom) {
+    // The flat shader emits black for the bloom source; keeping the
+    // destination prevents the overlay from punching bloom-free holes.
+    ctd[1].blend_state.enable_blend = true;
+    ctd[1].blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ZERO;
+    ctd[1].blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+    ctd[1].blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+    ctd[1].blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO;
+    ctd[1].blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+    ctd[1].blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+  }
+
+  pi.target_info.num_color_targets = 2;
+  pi.target_info.color_target_descriptions = ctd;
+
+  pi.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_4;
+
+  static SDL_GPUVertexBufferDescription vb{};
+  vb.slot = 0;
+  vb.pitch = (Uint32)sizeof (debug_vertex);
+  vb.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+  pi.vertex_input_state.num_vertex_buffers = 1;
+  pi.vertex_input_state.vertex_buffer_descriptions = &vb;
+
+  static SDL_GPUVertexAttribute attrs[2];
+  SDL_zero (attrs);
+  attrs[0].location = 0;
+  attrs[0].buffer_slot = 0;
+  attrs[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+  attrs[0].offset = offsetof (debug_vertex, pos);
+  attrs[1].location = 1;
+  attrs[1].buffer_slot = 0;
+  attrs[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
+  attrs[1].offset = offsetof (debug_vertex, color);
+  pi.vertex_input_state.num_vertex_attributes = 2;
+  pi.vertex_input_state.vertex_attributes = attrs;
+
+  SDL_GPUGraphicsPipeline *pipeline
+      = SDL_CreateGPUGraphicsPipeline (m_ctx->gpu_device, &pi);
+
+  SDL_ReleaseGPUShader (m_ctx->gpu_device, vert);
+  SDL_ReleaseGPUShader (m_ctx->gpu_device, frag);
+  return pipeline;
+}
+
+SDL_GPUGraphicsPipeline *
+gfx::scene_renderer::create_ldr_overlay_pipeline ()
+{
+  auto vert_id = m_res_mgr->register_shader (
+      "engine://compiled_shaders/flat.vert.slang.spv");
+  auto frag_id = m_res_mgr->register_shader (
+      "engine://compiled_shaders/flat.frag.slang.spv");
+
+  SDL_GPUShader *vert = gfx::shader::load_from_manager (
+      m_ctx->gpu_device, m_res_mgr, vert_id, SDL_GPU_SHADERSTAGE_VERTEX, 1, 0);
+  SDL_GPUShader *frag
+      = gfx::shader::load_from_manager (m_ctx->gpu_device, m_res_mgr, frag_id,
+                                        SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0);
+
+  if ((vert == nullptr) || (frag == nullptr)) {
+    if (vert != nullptr) {
+      SDL_ReleaseGPUShader (m_ctx->gpu_device, vert);
+    }
+    if (frag != nullptr) {
+      SDL_ReleaseGPUShader (m_ctx->gpu_device, frag);
+    }
+    return nullptr;
+  }
+
+  SDL_GPUGraphicsPipelineCreateInfo pi{};
+  SDL_zero (pi);
+  pi.vertex_shader = vert;
+  pi.fragment_shader = frag;
+  pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+
+  pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+  pi.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+
+  // The present texture is a single-sample LDR target, matching the
+  // swapchain format, and has no depth attachment.
+  SDL_GPUColorTargetDescription ctd[1]{};
+  ctd[0].format = m_window->swapchain_format ();
+  ctd[0].blend_state.enable_blend = true;
+  ctd[0].blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+  ctd[0].blend_state.dst_color_blendfactor
+      = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+  ctd[0].blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+  // Keep the destination alpha: the present texture is displayed 1:1 and
+  // must stay opaque.
+  ctd[0].blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ZERO;
+  ctd[0].blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+  ctd[0].blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+
+  pi.target_info.num_color_targets = 1;
+  pi.target_info.color_target_descriptions = ctd;
+  pi.target_info.has_depth_stencil_target = false;
+
+  pi.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+
+  static SDL_GPUVertexBufferDescription vb{};
+  vb.slot = 0;
+  vb.pitch = (Uint32)sizeof (overlay_vertex);
+  vb.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+  pi.vertex_input_state.num_vertex_buffers = 1;
+  pi.vertex_input_state.vertex_buffer_descriptions = &vb;
+
+  static SDL_GPUVertexAttribute attrs[2];
+  SDL_zero (attrs);
+  attrs[0].location = 0;
+  attrs[0].buffer_slot = 0;
+  attrs[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+  attrs[0].offset = offsetof (overlay_vertex, position);
+  attrs[1].location = 1;
+  attrs[1].buffer_slot = 0;
+  attrs[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
+  attrs[1].offset = offsetof (overlay_vertex, color);
+  pi.vertex_input_state.num_vertex_attributes = 2;
+  pi.vertex_input_state.vertex_attributes = attrs;
+
+  SDL_GPUGraphicsPipeline *pipeline
+      = SDL_CreateGPUGraphicsPipeline (m_ctx->gpu_device, &pi);
+
+  SDL_ReleaseGPUShader (m_ctx->gpu_device, vert);
+  SDL_ReleaseGPUShader (m_ctx->gpu_device, frag);
+  return pipeline;
+}
+
+void
+gfx::scene_renderer::ensure_debug_lines_pipeline ()
+{
+  if (m_pipeline_debug_lines == nullptr) {
+    m_pipeline_debug_lines = create_debug_pipeline (
+        SDL_GPU_PRIMITIVETYPE_LINELIST, true, false, false);
+  }
+}
+
+void
+gfx::scene_renderer::ensure_debug_overlay_pipeline (overlay_blending blending)
+{
+  if (blending == overlay_blending::write) {
+    if (m_pipeline_debug_overlay_write == nullptr) {
+      m_pipeline_debug_overlay_write = create_debug_pipeline (
+          SDL_GPU_PRIMITIVETYPE_TRIANGLELIST, false, false, true);
+    }
+    return;
+  }
+
+  if (m_pipeline_debug_overlay == nullptr) {
+    m_pipeline_debug_overlay = create_debug_pipeline (
+        SDL_GPU_PRIMITIVETYPE_TRIANGLELIST, false, true, true);
+  }
+}
+
+void
+gfx::scene_renderer::ensure_ldr_overlay_pipeline ()
+{
+  if (m_pipeline_debug_overlay_ldr == nullptr) {
+    m_pipeline_debug_overlay_ldr = create_ldr_overlay_pipeline ();
+  }
+}
+
+void
+gfx::scene_renderer::destroy_debug_pipelines ()
+{
+  if (m_pipeline_debug_lines != nullptr) {
+    SDL_ReleaseGPUGraphicsPipeline (m_ctx->gpu_device, m_pipeline_debug_lines);
+    m_pipeline_debug_lines = nullptr;
+  }
+  if (m_pipeline_debug_overlay != nullptr) {
+    SDL_ReleaseGPUGraphicsPipeline (m_ctx->gpu_device,
+                                    m_pipeline_debug_overlay);
+    m_pipeline_debug_overlay = nullptr;
+  }
+  if (m_pipeline_debug_overlay_write != nullptr) {
+    SDL_ReleaseGPUGraphicsPipeline (m_ctx->gpu_device,
+                                    m_pipeline_debug_overlay_write);
+    m_pipeline_debug_overlay_write = nullptr;
+  }
+  if (m_pipeline_debug_overlay_ldr != nullptr) {
+    SDL_ReleaseGPUGraphicsPipeline (m_ctx->gpu_device,
+                                    m_pipeline_debug_overlay_ldr);
+    m_pipeline_debug_overlay_ldr = nullptr;
+  }
+}
+
+SDL_GPUBuffer *
+gfx::scene_renderer::upload_debug_vertices (const void *data, size_t size)
+{
+  SDL_GPUTransferBufferCreateInfo tinfo{};
+  SDL_zero (tinfo);
+  tinfo.size = (Uint64)size;
+  tinfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+  SDL_GPUTransferBuffer *upload
+      = SDL_CreateGPUTransferBuffer (m_ctx->gpu_device, &tinfo);
+  if (upload == nullptr) {
+    return nullptr;
+  }
+
+  void *mapped = SDL_MapGPUTransferBuffer (m_ctx->gpu_device, upload, false);
+  if (mapped != nullptr) {
+    memcpy (mapped, data, size);
+    SDL_UnmapGPUTransferBuffer (m_ctx->gpu_device, upload);
+  }
+
+  SDL_GPUBufferCreateInfo bi{};
+  SDL_zero (bi);
+  bi.size = (Uint64)size;
+  bi.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+  SDL_GPUBuffer *buffer = SDL_CreateGPUBuffer (m_ctx->gpu_device, &bi);
+
+  if (buffer != nullptr) {
+    SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer (m_ctx->gpu_device);
+    SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass (cmd);
+
+    SDL_GPUTransferBufferLocation const src{ .transfer_buffer = upload,
+                                             .offset = 0 };
+    SDL_GPUBufferRegion const region{ .buffer = buffer,
+                                      .offset = 0,
+                                      .size = static_cast<Uint32> (size) };
+    SDL_UploadToGPUBuffer (cp, &src, &region, true);
+
+    SDL_EndGPUCopyPass (cp);
+    SDL_SubmitGPUCommandBuffer (cmd);
+  }
+
+  SDL_ReleaseGPUTransferBuffer (m_ctx->gpu_device, upload);
+  return buffer;
+}
+
 void
 gfx::scene_renderer::draw_debug_lines (const std::vector<debug_vertex> &verts,
                                        const glm::mat4 &vp)
@@ -474,129 +765,142 @@ gfx::scene_renderer::draw_debug_lines (const std::vector<debug_vertex> &verts,
     return;
   }
 
-  // Lazy-create a simple line pipeline
+  ensure_debug_lines_pipeline ();
   if (m_pipeline_debug_lines == nullptr) {
-    auto vert_id = m_res_mgr->register_shader (
-        "engine://compiled_shaders/flat.vert.slang.spv");
-    auto frag_id = m_res_mgr->register_shader (
-        "engine://compiled_shaders/flat.frag.slang.spv");
-
-    SDL_GPUShader *vert
-        = gfx::shader::load_from_manager (m_ctx->gpu_device, m_res_mgr, vert_id,
-                                          SDL_GPU_SHADERSTAGE_VERTEX, 1, 0);
-    SDL_GPUShader *frag
-        = gfx::shader::load_from_manager (m_ctx->gpu_device, m_res_mgr, frag_id,
-                                          SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0);
-
-    if ((vert != nullptr) && (frag != nullptr)) {
-      SDL_GPUGraphicsPipelineCreateInfo pi{};
-      SDL_zero (pi);
-      pi.vertex_shader = vert;
-      pi.fragment_shader = frag;
-      pi.primitive_type = SDL_GPU_PRIMITIVETYPE_LINELIST;
-
-      // Depth
-      pi.target_info.has_depth_stencil_target = true;
-      pi.target_info.depth_stencil_format = m_window->depth_format ();
-      pi.depth_stencil_state.enable_depth_test = true;
-      pi.depth_stencil_state.enable_depth_write = true;
-      pi.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
-
-      // Color targets (match main renderer)
-      SDL_GPUColorTargetDescription ctd[2]{};
-      ctd[0].format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
-      ctd[1].format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
-      pi.target_info.num_color_targets = 2;
-      pi.target_info.color_target_descriptions = ctd;
-
-      pi.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_4;
-
-      static SDL_GPUVertexBufferDescription vb{};
-      vb.slot = 0;
-      vb.pitch = (Uint32)sizeof (debug_vertex);
-      vb.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
-      pi.vertex_input_state.num_vertex_buffers = 1;
-      pi.vertex_input_state.vertex_buffer_descriptions = &vb;
-
-      static SDL_GPUVertexAttribute attrs[2];
-      SDL_zero (attrs);
-      attrs[0].location = 0;
-      attrs[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
-      attrs[0].offset = offsetof (debug_vertex, pos);
-      attrs[1].location = 1;
-      attrs[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4;
-      attrs[1].offset = offsetof (debug_vertex, color);
-      pi.vertex_input_state.num_vertex_attributes = 2;
-      pi.vertex_input_state.vertex_attributes = attrs;
-
-      m_pipeline_debug_lines
-          = SDL_CreateGPUGraphicsPipeline (m_ctx->gpu_device, &pi);
-
-      SDL_ReleaseGPUShader (m_ctx->gpu_device, vert);
-      SDL_ReleaseGPUShader (m_ctx->gpu_device, frag);
-    } else {
-      if (vert != nullptr) {
-        SDL_ReleaseGPUShader (m_ctx->gpu_device, vert);
-      }
-      if (frag != nullptr) {
-        SDL_ReleaseGPUShader (m_ctx->gpu_device, frag);
-      }
-    }
-  }
-
-  // Upload vertices
-  const size_t bytes = verts.size () * sizeof (debug_vertex);
-  SDL_GPUTransferBufferCreateInfo tinfo{};
-  tinfo.size = (Uint64)bytes;
-  tinfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-  SDL_GPUTransferBuffer *upload
-      = SDL_CreateGPUTransferBuffer (m_ctx->gpu_device, &tinfo);
-  if (upload == nullptr) {
     return;
   }
 
-  void *mapped = SDL_MapGPUTransferBuffer (m_ctx->gpu_device, upload, false);
-  if (mapped != nullptr) {
-    memcpy (mapped, verts.data (), bytes);
-    SDL_UnmapGPUTransferBuffer (m_ctx->gpu_device, upload);
+  const size_t bytes = verts.size () * sizeof (debug_vertex);
+  SDL_GPUBuffer *buffer = upload_debug_vertices (verts.data (), bytes);
+  if (buffer == nullptr) {
+    return;
   }
-
-  SDL_GPUBufferCreateInfo bi{};
-  bi.size = (Uint64)bytes;
-  bi.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
-  SDL_GPUBuffer *vb = SDL_CreateGPUBuffer (m_ctx->gpu_device, &bi);
-
-  SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer (m_ctx->gpu_device);
-  SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass (cmd);
-
-  SDL_GPUTransferBufferLocation const src{ .transfer_buffer = upload,
-                                           .offset = 0 };
-  SDL_GPUBufferRegion const dstreg{
-    .buffer = vb, .offset = 0, .size = static_cast<Uint32> ((Uint64)bytes)
-  };
-  SDL_UploadToGPUBuffer (cp, &src, &dstreg, true);
-
-  SDL_EndGPUCopyPass (cp);
-  SDL_SubmitGPUCommandBuffer (cmd);
 
   // Push VP uniform
   SDL_PushGPUVertexUniformData (m_ctx->main_cmd, 0, &vp, sizeof (glm::mat4));
 
   // Bind and draw
   SDL_GPUBufferBinding binding{};
-  binding.buffer = vb;
+  binding.buffer = buffer;
   binding.offset = 0;
-
   SDL_BindGPUVertexBuffers (m_ctx->main_pass, 0, &binding, 1);
-  if (m_pipeline_debug_lines != nullptr) {
-    SDL_BindGPUGraphicsPipeline (m_ctx->main_pass, m_pipeline_debug_lines);
-  }
-
+  SDL_BindGPUGraphicsPipeline (m_ctx->main_pass, m_pipeline_debug_lines);
   SDL_DrawGPUPrimitives (m_ctx->main_pass, (Uint32)verts.size (), 1, 0, 0);
 
-  // Cleanup
-  SDL_ReleaseGPUBuffer (m_ctx->gpu_device, vb);
-  SDL_ReleaseGPUTransferBuffer (m_ctx->gpu_device, upload);
+  SDL_ReleaseGPUBuffer (m_ctx->gpu_device, buffer);
+}
+
+void
+gfx::scene_renderer::draw_debug_overlay (
+    const std::vector<overlay_vertex> &verts, overlay_blending blending)
+{
+  if (verts.empty () || (m_ctx->main_pass == nullptr)) {
+    return;
+  }
+
+  ensure_debug_overlay_pipeline (blending);
+  SDL_GPUGraphicsPipeline *pipeline = (blending == overlay_blending::write)
+                                          ? m_pipeline_debug_overlay_write
+                                          : m_pipeline_debug_overlay;
+  if (pipeline == nullptr) {
+    return;
+  }
+
+  const size_t bytes = verts.size () * sizeof (overlay_vertex);
+  SDL_GPUBuffer *buffer = upload_debug_vertices (verts.data (), bytes);
+  if (buffer == nullptr) {
+    return;
+  }
+
+  // Overlay positions already are normalized device coordinates, but the
+  // flat shader still expects the view-projection uniform in vertex slot 0.
+  const glm::mat4 identity (1.0F);
+  SDL_PushGPUVertexUniformData (m_ctx->main_cmd, 0, &identity,
+                                sizeof (glm::mat4));
+
+  SDL_GPUBufferBinding binding{};
+  binding.buffer = buffer;
+  binding.offset = 0;
+  SDL_BindGPUVertexBuffers (m_ctx->main_pass, 0, &binding, 1);
+  SDL_BindGPUGraphicsPipeline (m_ctx->main_pass, pipeline);
+  SDL_DrawGPUPrimitives (m_ctx->main_pass, (Uint32)verts.size (), 1, 0, 0);
+
+  SDL_ReleaseGPUBuffer (m_ctx->gpu_device, buffer);
+}
+
+void
+gfx::scene_renderer::queue_debug_overlay (std::vector<overlay_vertex> verts)
+{
+  m_debug_overlay_queue = std::move (verts);
+}
+
+void
+gfx::scene_renderer::flush_debug_overlay ()
+{
+  const gfx::texture &present = m_window->present_tex ();
+  if (m_debug_overlay_queue.empty () || (m_ctx->main_cmd == nullptr)
+      || (present.texture_data == nullptr) || (present.width == 0)
+      || (present.height == 0)) {
+    m_debug_overlay_queue.clear ();
+    return;
+  }
+
+  ensure_ldr_overlay_pipeline ();
+  if (m_pipeline_debug_overlay_ldr == nullptr) {
+    m_debug_overlay_queue.clear ();
+    return;
+  }
+
+  const std::vector<overlay_vertex> &verts = m_debug_overlay_queue;
+  SDL_GPUBuffer *buffer = upload_debug_vertices (
+      verts.data (), verts.size () * sizeof (overlay_vertex));
+  if (buffer == nullptr) {
+    m_debug_overlay_queue.clear ();
+    return;
+  }
+
+  // Composite into the tone-mapped present texture so overlay colors are
+  // written to the final image unchanged by exposure, bloom, or gamma.
+  SDL_GPUColorTargetInfo ct{};
+  SDL_zero (ct);
+  ct.texture = present.texture_data;
+  ct.load_op = SDL_GPU_LOADOP_LOAD;
+  ct.store_op = SDL_GPU_STOREOP_STORE;
+
+  SDL_GPURenderPass *pass
+      = SDL_BeginGPURenderPass (m_ctx->main_cmd, &ct, 1, nullptr);
+  if (pass != nullptr) {
+    SDL_GPUViewport viewport{};
+    SDL_zero (viewport);
+    viewport.w = static_cast<float> (present.width);
+    viewport.h = static_cast<float> (present.height);
+    viewport.max_depth = 1.0F;
+    SDL_SetGPUViewport (pass, &viewport);
+
+    SDL_Rect scissor{};
+    SDL_zero (scissor);
+    scissor.w = static_cast<int> (present.width);
+    scissor.h = static_cast<int> (present.height);
+    SDL_SetGPUScissor (pass, &scissor);
+
+    // Overlay positions already are normalized device coordinates, but the
+    // flat shader still expects the view-projection uniform in vertex slot 0.
+    const glm::mat4 identity (1.0F);
+    SDL_PushGPUVertexUniformData (m_ctx->main_cmd, 0, &identity,
+                                  sizeof (glm::mat4));
+
+    SDL_GPUBufferBinding binding{};
+    binding.buffer = buffer;
+    binding.offset = 0;
+    SDL_BindGPUVertexBuffers (pass, 0, &binding, 1);
+    SDL_BindGPUGraphicsPipeline (pass, m_pipeline_debug_overlay_ldr);
+    SDL_DrawGPUPrimitives (pass, (Uint32)verts.size (), 1, 0, 0);
+
+    SDL_EndGPURenderPass (pass);
+  }
+
+  SDL_ReleaseGPUBuffer (m_ctx->gpu_device, buffer);
+  m_debug_overlay_queue.clear ();
 }
 
 void
@@ -609,6 +913,15 @@ const glm::vec3 &
 gfx::scene_renderer::camera_position () const
 {
   return m_camera_pos;
+}
+
+glm::vec2
+gfx::scene_renderer::render_target_size () const
+{
+  uint32_t width = 0;
+  uint32_t height = 0;
+  m_window->get_size (width, height);
+  return glm::vec2 (static_cast<float> (width), static_cast<float> (height));
 }
 
 void
@@ -953,6 +1266,7 @@ gfx::scene_renderer::~scene_renderer ()
   destroy_ssao_pipeline ();
   destroy_outline_pipeline ();
   destroy_ibl_pipelines ();
+  destroy_debug_pipelines ();
   destroy_default_resources ();
 
   if (m_skybox_pipeline != nullptr) {
