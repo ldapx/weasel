@@ -45,11 +45,15 @@
 #include <RmlUi_Platform_SDL.h>
 
 #include <cstdio>
+#include <cctype>
+#include <cstring>
 #include <filesystem>
 #include <sstream>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 namespace editor_rml
@@ -66,6 +70,100 @@ public:
   {
   }
 
+  /**
+   * Editor theme palette. This RmlUi build has no stylesheet variables,
+   * so ``editor.rcss`` references these as ``@tokens`` and they are
+   * expanded to literals when the stylesheet is served below. Unknown
+   * ``@names`` are left untouched so typos still surface in RmlUi's logs.
+   */
+  static const std::pair<const char *, const char *> *
+  theme_tokens (size_t &count)
+  {
+    static const std::pair<const char *, const char *> tokens[] = {
+      { "text", "#f2ebe9" },
+      { "bright", "#ffffff" },
+      { "dim", "#9a938b" },
+      { "muted", "#8f8a80" },
+      { "faint", "#6b655a" },
+      { "faint-alt", "#6e6a63" },
+      { "bg-root", "#09090c" },
+      { "bg-panel", "#0c0d12f7" },
+      { "bg-toolbar", "#0c0d12f5" },
+      { "bg-deep", "#101116" },
+      { "bg-input", "#101218" },
+      { "bg-card", "#14161ee6" },
+      { "bg-well", "#06070ad9" },
+      { "bg-row", "#1b1d26" },
+      { "bg-hover", "#262a37" },
+      { "bg-tab-hover", "#2c3242" },
+      { "bg-menu-hover", "#2b3040" },
+      { "border", "#2a2c38" },
+      { "border-strong", "#2f3242" },
+      { "border-faint", "#23252f" },
+      { "olive", "#68763c" },
+      { "olive-light", "#8fa34f" },
+      { "gold", "#dec16b" },
+      { "gold-light", "#e8d194" },
+      { "gold-hover", "#dec16b1c" },
+      { "gold-target", "#dec16b30" },
+      { "gold-selected", "#dec16b40" },
+      { "gold-selected-hover", "#dec16b59" },
+      { "zebra-even", "#ffffff06" },
+      { "red", "#e06c60" },
+      { "amber", "#f9e2af" },
+      { "green-bright", "#a6e3a1" },
+      { "error-dark", "#7c3a3a" },
+      { "error-border", "#a05050" },
+      { "role-blue", "#66b3ff" },
+      { "role-green", "#99e699" },
+      { "role-yellow", "#cccc66" },
+      { "sep", "#4a4438" },
+      { "card", "rgb(14, 15, 20)" },
+      { "backdrop", "#0000008c" },
+      { "veil", "#07080bf2" },
+      { "scrollbar-track", "#09090c80" },
+    };
+    count = sizeof (tokens) / sizeof (tokens[0]);
+    return tokens;
+  }
+
+  /** Expands ``@token`` references using the theme palette above. */
+  static std::string
+  expand_theme_tokens (const std::string &css)
+  {
+    size_t count = 0;
+    const auto *tokens = theme_tokens (count);
+    std::string out;
+    out.reserve (css.size ());
+    for (size_t i = 0; i < css.size ();) {
+      if (css[i] == '@' && i + 1 < css.size ()
+          && std::islower (static_cast<unsigned char> (css[i + 1]))) {
+        size_t end = i + 1;
+        while (end < css.size ()
+               && (std::isalnum (static_cast<unsigned char> (css[end]))
+                   || css[end] == '-')) {
+          ++end;
+        }
+        const std::string name = css.substr (i + 1, end - i - 1);
+        const char *value = nullptr;
+        for (size_t t = 0; t < count; ++t) {
+          if (name == tokens[t].first) {
+            value = tokens[t].second;
+            break;
+          }
+        }
+        if (value != nullptr) {
+          out += value;
+          i = end;
+          continue;
+        }
+        // Unknown token: leave it verbatim so RmlUi still reports it.
+      }
+      out += css[i++];
+    }
+    return out;
+  }
+
   Rml::FileHandle
   Open (const Rml::String &path) override
   {
@@ -78,15 +176,47 @@ public:
                           );
     const std::string full
         = (absolute || m_base.empty ()) ? path : (m_base + "/" + path);
+
+    // Stylesheets pass through the theme expander and are served from
+    // memory; everything else streams straight from disk as before.
+    if (full.size () >= 5 && full.compare (full.size () - 5, 5, ".rcss") == 0) {
+      FILE *fp = std::fopen (full.c_str (), "rb");
+      if (fp == nullptr) {
+        return 0;
+      }
+      std::string text;
+      char chunk[4096];
+      size_t got = 0;
+      while ((got = std::fread (chunk, 1, sizeof (chunk), fp)) > 0) {
+        text.append (chunk, got);
+      }
+      std::fclose (fp);
+      text = expand_theme_tokens (text);
+      auto *buffer = new mem_file{ std::move (text), 0 };
+      const Rml::FileHandle handle = reinterpret_cast<Rml::FileHandle> (buffer);
+      std::lock_guard<std::mutex> lock (m_mutex);
+      m_buffers.insert (handle);
+      return handle;
+    }
     return reinterpret_cast<Rml::FileHandle> (std::fopen (full.c_str (), "rb"));
   }
 
   void
   Close (Rml::FileHandle file) override
   {
-    if (file != 0) {
-      std::fclose (reinterpret_cast<FILE *> (file));
+    if (file == 0) {
+      return;
     }
+    {
+      std::lock_guard<std::mutex> lock (m_mutex);
+      auto it = m_buffers.find (file);
+      if (it != m_buffers.end ()) {
+        m_buffers.erase (it);
+        delete reinterpret_cast<mem_file *> (file);
+        return;
+      }
+    }
+    std::fclose (reinterpret_cast<FILE *> (file));
   }
 
   size_t
@@ -95,14 +225,45 @@ public:
     if (file == 0) {
       return 0;
     }
+    std::lock_guard<std::mutex> lock (m_mutex);
+    if (m_buffers.find (file) != m_buffers.end ()) {
+      auto *mem = reinterpret_cast<mem_file *> (file);
+      const size_t left = mem->data.size () - mem->pos;
+      const size_t count = size < left ? size : left;
+      std::memcpy (buffer, mem->data.data () + mem->pos, count);
+      mem->pos += count;
+      return count;
+    }
     return std::fread (buffer, 1, size, reinterpret_cast<FILE *> (file));
   }
 
   bool
   Seek (Rml::FileHandle file, long offset, int origin) override
   {
-    return file != 0
-           && std::fseek (reinterpret_cast<FILE *> (file), offset, origin) == 0;
+    if (file == 0) {
+      return false;
+    }
+    {
+      std::lock_guard<std::mutex> lock (m_mutex);
+      if (m_buffers.find (file) != m_buffers.end ()) {
+        auto *mem = reinterpret_cast<mem_file *> (file);
+        long base = 0;
+        if (origin == SEEK_CUR) {
+          base = static_cast<long> (mem->pos);
+        } else if (origin == SEEK_END) {
+          base = static_cast<long> (mem->data.size ());
+        } else if (origin != SEEK_SET) {
+          return false;
+        }
+        const long pos = base + offset;
+        if (pos < 0 || static_cast<size_t> (pos) > mem->data.size ()) {
+          return false;
+        }
+        mem->pos = static_cast<size_t> (pos);
+        return true;
+      }
+    }
+    return std::fseek (reinterpret_cast<FILE *> (file), offset, origin) == 0;
   }
 
   size_t
@@ -111,11 +272,23 @@ public:
     if (file == 0) {
       return 0;
     }
+    std::lock_guard<std::mutex> lock (m_mutex);
+    if (m_buffers.find (file) != m_buffers.end ()) {
+      return reinterpret_cast<mem_file *> (file)->pos;
+    }
     return static_cast<size_t> (std::ftell (reinterpret_cast<FILE *> (file)));
   }
 
 private:
+  struct mem_file
+  {
+    std::string data;
+    size_t pos = 0;
+  };
+
   std::string m_base;
+  std::mutex m_mutex;
+  std::unordered_set<Rml::FileHandle> m_buffers;
 };
 
 std::string
