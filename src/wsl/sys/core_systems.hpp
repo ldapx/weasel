@@ -55,6 +55,13 @@ public:
     std::function<void (entt::registry &)> build_draw_data;
     std::function<void (entt::registry &)> prepare_gpu_rsc;
     std::function<void (entt::registry &)> record_ui_draw_cmd;
+    /**
+     * Optional UI stage invoked after the scene passes and before the
+     * swapchain UI pass, while no render pass is open. Backends that own
+     * their SDL_GPU render pass (e.g. the RmlUi SDL_GPU interface) hook in
+     * here; in-pass recorders (ImGui) keep using record_ui_draw_cmd.
+     */
+    std::function<void (entt::registry &)> record_ui_overlay;
   };
 
   core_systems ();

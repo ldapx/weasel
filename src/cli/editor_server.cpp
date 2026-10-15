@@ -1,5 +1,4 @@
 #include "editor_server.hpp"
-#include "editor_app.hpp"
 #include "wsl/log/log.hpp"
 #include "wsl/net/command_protocol.hpp"
 #include "wsl/net/socket_compat.hpp"
@@ -10,7 +9,7 @@
 #include <system_error>
 #include <thread>
 
-namespace editor
+namespace wsl::cli
 {
 
 class editor_server::impl
@@ -54,7 +53,7 @@ public:
   }
 
   void
-  poll (editor_app *editor_app)
+  poll (const editor_server::command_handler &handler)
   {
     if (m_server_fd == wsl::net::invalid_socket) {
       return;
@@ -64,13 +63,14 @@ public:
     wsl::net::socket_handle client_fd
         = wsl::net::socket_try_accept (m_server_fd);
     if (client_fd != wsl::net::invalid_socket) {
-      std::thread (&impl::handle_client, this, client_fd, editor_app).detach ();
+      std::thread (&impl::handle_client, this, client_fd, handler).detach ();
     }
   }
 
 private:
   void
-  handle_client (wsl::net::socket_handle client_fd, editor_app *editor_app)
+  handle_client (wsl::net::socket_handle client_fd,
+                 editor_server::command_handler handler)
   {
     // Label this thread for Tracy. A new detached std::thread is
     // spawned per accepted client connection, so without a name
@@ -127,12 +127,12 @@ private:
 
       wsl::log::net ()->debug ("Received command: {}", command);
 
-      // Execute command via editor_app
+      // Execute command through the installed handler.
       std::string output;
-      if (editor_app) {
-        output = editor_app->execute_command (command);
+      if (handler) {
+        output = handler (command);
       } else {
-        output = "ERROR: No editor app available\n";
+        output = "ERROR: No command handler installed\n";
       }
 
       // Send response with terminator
@@ -214,7 +214,7 @@ editor_server::is_running () const
 void
 editor_server::poll ()
 {
-  m_impl->poll (m_editor_app);
+  m_impl->poll (m_command_handler);
 }
 
-} // namespace editor
+} // namespace wsl::cli

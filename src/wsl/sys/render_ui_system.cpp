@@ -4,6 +4,7 @@
 #include <RmlUi/Core/Math.h>
 #include <RmlUi_Platform_SDL.h>
 #include <SDL3/SDL_events.h>
+#include <SDL3/SDL_mouse.h>
 #include <entt/entity/entity.hpp>
 #include <entt/entity/fwd.hpp>
 #include <string>
@@ -13,7 +14,6 @@
 #include "wsl/comp/singl/runtime_context.hpp"
 #include "wsl/comp/singl/editor_context.hpp"
 #include "wsl/comp/singl/engine_resources.hpp"
-#include <imgui.h>
 
 namespace wsl
 {
@@ -196,19 +196,23 @@ render_ui_system::handle_sdl_event (entt::registry &registry,
       float const scale_y
           = (float)runtime_ctx.window ().present_tex ().height / img_h;
 
-      ImVec2 const mouse_pos = ImGui::GetMousePos ();
+      // Mouse state straight from SDL keeps this system independent of the
+      // editor UI toolkit (the previous implementation queried ImGui).
+      float mouse_x = 0.0F;
+      float mouse_y = 0.0F;
+      SDL_GetMouseState (&mouse_x, &mouse_y);
 
       if (ev.type () == SDL_EVENT_MOUSE_MOTION) {
-        adjusted_ev.motion.x = (mouse_pos.x - img_x) * scale_x;
-        adjusted_ev.motion.y = (mouse_pos.y - img_y) * scale_y;
+        adjusted_ev.motion.x = (mouse_x - img_x) * scale_x;
+        adjusted_ev.motion.y = (mouse_y - img_y) * scale_y;
       } else if (ev.type () == SDL_EVENT_MOUSE_BUTTON_DOWN
                  || ev.type () == SDL_EVENT_MOUSE_BUTTON_UP) {
-        adjusted_ev.button.x = (mouse_pos.x - img_x) * scale_x;
-        adjusted_ev.button.y = (mouse_pos.y - img_y) * scale_y;
+        adjusted_ev.button.x = (mouse_x - img_x) * scale_x;
+        adjusted_ev.button.y = (mouse_y - img_y) * scale_y;
 
         // Optional: ignore clicks outside the game view
-        if (mouse_pos.x < img_x || mouse_pos.x > img_x + img_w
-            || mouse_pos.y < img_y || mouse_pos.y > img_y + img_h) {
+        if (mouse_x < img_x || mouse_x > img_x + img_w || mouse_y < img_y
+            || mouse_y > img_y + img_h) {
           process = false;
         }
       }

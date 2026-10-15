@@ -19,7 +19,6 @@
 #include <cstdio>
 #include <entt/entity/fwd.hpp>
 #include <entt/entt.hpp>
-#include <imgui.h>
 #include <string>
 
 namespace wsl
@@ -66,7 +65,6 @@ rsc::scene_manager::register_meta ()
                            "Controls scene creation and active scene "
                            "selection for the current runtime.",
                            "" });
-  (factory.func<&rsc::scene_manager::custom_inspect>)("custom_inspect"_hs);
 }
 
 void
@@ -221,66 +219,6 @@ const rsc::world &
 rsc::scene_manager::get_world () const
 {
   return m_main_world;
-}
-
-bool
-rsc::scene_manager::custom_inspect (const char *label,
-                                    comp::singl::runtime_context *runtime_ctx)
-{
-  (void)label;
-  (void)runtime_ctx;
-
-  bool changed = false;
-  auto &scenes = m_main_world.get_scenes ();
-
-  ImGui::TextDisabled ("Scene Count: %zu", scenes.size ());
-
-  const char *preview = (m_active_scene != nullptr)
-                            ? m_active_scene->get_name ().c_str ()
-                            : "None";
-  if (ImGui::BeginCombo ("Active Scene", preview)) {
-    for (const auto &scene_ptr : scenes) {
-      if (!scene_ptr) {
-        continue;
-      }
-
-      const bool selected = (scene_ptr.get () == m_active_scene);
-      if (ImGui::Selectable (scene_ptr->get_name ().c_str (), selected)) {
-        set_active (scene_ptr.get ());
-        changed = true;
-      }
-
-      if (selected) {
-        ImGui::SetItemDefaultFocus ();
-      }
-    }
-    ImGui::EndCombo ();
-  }
-
-  static int new_scene_counter = 1;
-  if (ImGui::Button ("Create Scene")) {
-    char name[64];
-    std::snprintf (name, sizeof (name), "Scene %d", new_scene_counter++);
-    create_scene (name, true);
-    changed = true;
-  }
-
-  if (m_active_scene == nullptr) {
-    ImGui::BeginDisabled ();
-  }
-
-  ImGui::SameLine ();
-  if (ImGui::Button ("Remove Active Scene") && (m_active_scene != nullptr)) {
-    scene *to_remove = m_active_scene;
-    destroy_scene (to_remove);
-    changed = true;
-  }
-
-  if (m_active_scene == nullptr) {
-    ImGui::EndDisabled ();
-  }
-
-  return changed;
 }
 
 } // namespace wsl

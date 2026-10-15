@@ -55,7 +55,8 @@ weasel/
 | Target | Description |
 |--------|-------------|
 | `wsl` | Core engine shared library (`libwsl.so` / `wsl.dll`) |
-| `weasel` | Editor executable |
+| `weasel` | ImGui editor executable (current) |
+| `weasel-rmlui` | RmlUi editor executable (successor, no ImGui) |
 | `weasel-cli` | Command-line interface tool |
 | `weasel-mcp-server` | MCP server for AI-assisted development |
 
@@ -65,6 +66,55 @@ weasel/
 xmake f --toolchain=clang
 xmake build -j2
 ```
+
+### Editor support (`editor_support`)
+
+`libwsl` is ImGui-free in every configuration. Editor UI code lives in
+`src/editor_support/`, built as the static library target `editor_support`:
+
+- `editor_app.*` — abstract editor application framework.
+- `editor_context` ImGui parts — the renderer slot's typed accessors and the
+  ImGui inspector (`editor_context_gui.cpp`).
+- `inspectors_*.cpp` — the ImGui `custom_inspect` widgets for components,
+  singletons/managers, resource ids and math types.
+- `imgui_renderer_interface.hpp`, `editor_ui_layer_interface.hpp` — editor
+  backend/UI-layer interfaces.
+
+The core keeps `comp::singl::editor_context` as toolkit-neutral editor
+session state (selection, cameras, grid/gizmo state, debug renderer) because
+runtime systems render from it; the ImGui-specific members are type-erased.
+
+Widget registration: core `register_meta()` functions register the reflected
+data fields only; `wsl::editor::register_editor_inspectors()` (called by
+`wsl::editor_app`) attaches the ImGui widgets through entt meta.
+
+Build option: `weasel_editor_support` (default on) enables the
+`editor_support`, `weasel` and `weasel-rmlui` targets. Runtime-only builds
+skip all editor binaries:
+
+```bash
+xmake f --weasel_editor_support=n   # core/cli/mcp only, identical libwsl
+```
+
+`libwsl`'s compile commands are identical in both configurations; the option
+only decides whether the editor targets are built.
+
+### Editors
+
+Two editor front-ends share the core runtime, `editor_context` state, gizmos
+and the attach-mode server:
+
+- **`weasel`** — the current ImGui editor (`src/editor/` + `editor_support`).
+- **`weasel-rmlui`** — the successor editor with an RmlUi (HTML/CSS) UI
+  (`src/editor_rmlui/`). It does **not** link ImGui or `editor_support`.
+  The UI document/stylesheet live in `rsc/editor_rml/` (`editor.rml`,
+  `editor.rcss`). Panels: toolbar (play/pause/stop + gizmo modes), entity
+  hierarchy, read-only meta inspector, console wired to the CLI command
+  executor, and a log panel fed by a custom spdlog sink. Editor camera fly
+  controls: hold right mouse to look, WASD/QE to move, Shift for speed.
+  Attach mode (`weasel-cli -a ...`, MCP) works with either editor: the
+  command server lives in `src/cli/editor_server.*` and takes a command
+  handler.
 
 ### Running the Editor
 

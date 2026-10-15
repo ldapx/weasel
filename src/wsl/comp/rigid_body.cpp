@@ -12,64 +12,9 @@
 #include <entt/meta/factory.hpp>
 #include <glm/ext/vector_float3.hpp>
 #include <glm/fwd.hpp>
-#include <imgui.h>
 
 namespace wsl
 {
-
-namespace
-{
-
-bool
-draw_layer_button (const char *label, bool active)
-{
-  const ImVec2 size{ 28.0F, 28.0F };
-  const ImVec4 color = active ? ImVec4 (0.26F, 0.56F, 0.96F, 1.0F)
-                              : ImVec4 (0.19F, 0.20F, 0.23F, 1.0F);
-  const ImVec4 hovered = active ? ImVec4 (0.33F, 0.63F, 1.0F, 1.0F)
-                                : ImVec4 (0.25F, 0.27F, 0.31F, 1.0F);
-  const ImVec4 pressed = active ? ImVec4 (0.21F, 0.49F, 0.88F, 1.0F)
-                                : ImVec4 (0.16F, 0.17F, 0.20F, 1.0F);
-
-  ImGui::PushStyleColor (ImGuiCol_Button, color);
-  ImGui::PushStyleColor (ImGuiCol_ButtonHovered, hovered);
-  ImGui::PushStyleColor (ImGuiCol_ButtonActive, pressed);
-  const bool clicked = ImGui::Button (label, size);
-  ImGui::PopStyleColor (3);
-  return clicked;
-}
-
-template <typename IsActiveFn, typename OnPressFn>
-bool
-draw_layer_grid (const char *label, IsActiveFn &&is_active,
-                 OnPressFn &&on_press)
-{
-  bool changed = false;
-
-  ImGui::PushID (label);
-  ImGui::BeginGroup ();
-
-  for (uint32_t i = 0; i < phys::layers::collision_layer_count; ++i) {
-    if (i > 0 && (i % 4) != 0) {
-      ImGui::SameLine ();
-    }
-
-    char button_label[4];
-    std::snprintf (button_label, sizeof (button_label), "%u", i + 1);
-
-    if (draw_layer_button (button_label, is_active (i))) {
-      on_press (i);
-      changed = true;
-    }
-  }
-
-  ImGui::EndGroup ();
-  ImGui::PopID ();
-
-  return changed;
-}
-
-} // namespace
 
 namespace comp
 {
@@ -83,72 +28,12 @@ rigid_body::allowed_dofs_ui::register_meta ()
 
   auto &&f = entt::meta_factory<rigid_body::allowed_dofs_ui> ().type (
       entt::type_hash<rigid_body::allowed_dofs_ui>::value ());
-  (f.func<&rigid_body::allowed_dofs_ui::custom_inspect>)("custom_inspect"_hs);
   (f.data<&rigid_body::allowed_dofs_ui::value>)("value"_hs)
       .custom<comp::meta_info> (
           comp::meta_info{ "Allowed DOFs",
                            "Degree-of-freedom bitmask: All, or any combination "
                            "of Translation X/Y/Z and Rotation X/Y/Z",
                            "" });
-}
-
-bool
-rigid_body::allowed_dofs_ui::custom_inspect (
-    const char *label, comp::singl::runtime_context * /*unused*/)
-{
-  static const char *const names[] = { "All",
-                                       "Translation X",
-                                       "Translation Y",
-                                       "Translation Z",
-                                       "Rotation X",
-                                       "Rotation Y",
-                                       "Rotation Z",
-                                       "Translation XY",
-                                       "Translation XZ",
-                                       "Translation YZ",
-                                       "Rotation XY",
-                                       "Rotation XZ",
-                                       "Rotation YZ" };
-
-  static const phys::allowed_dofs vals[] = {
-    phys::allowed_dofs::All,
-    phys::allowed_dofs::TranslationX,
-    phys::allowed_dofs::TranslationY,
-    phys::allowed_dofs::TranslationZ,
-    phys::allowed_dofs::RotationX,
-    phys::allowed_dofs::RotationY,
-    phys::allowed_dofs::RotationZ,
-    phys::allowed_dofs::TranslationX | phys::allowed_dofs::TranslationY,
-    phys::allowed_dofs::TranslationX | phys::allowed_dofs::TranslationZ,
-    phys::allowed_dofs::TranslationY | phys::allowed_dofs::TranslationZ,
-    phys::allowed_dofs::RotationX | phys::allowed_dofs::RotationY,
-    phys::allowed_dofs::RotationX | phys::allowed_dofs::RotationZ,
-    phys::allowed_dofs::RotationY | phys::allowed_dofs::RotationZ,
-  };
-
-  int cur = 0;
-  for (int i = 0; i < (int)(sizeof (vals) / sizeof (vals[0])); ++i) {
-    if (value == vals[i]) {
-      cur = i;
-      break;
-    }
-  }
-
-  bool changed = false;
-  if (ImGui::BeginCombo (label, names[cur])) {
-    for (int i = 0; i < (int)(sizeof (vals) / sizeof (vals[0])); ++i) {
-      const bool sel = (i == cur);
-      if (ImGui::Selectable (names[i], sel)) {
-        value = vals[i];
-        changed = true;
-      }
-      if (sel) {
-        ImGui::SetItemDefaultFocus ();
-      }
-    }
-    ImGui::EndCombo ();
-  }
-  return changed;
 }
 
 // ---------------- rigid_body::motion_type_ui ----------------
@@ -160,45 +45,9 @@ rigid_body::motion_type_ui::register_meta ()
 
   auto &&f = entt::meta_factory<rigid_body::motion_type_ui> ().type (
       entt::type_hash<rigid_body::motion_type_ui>::value ());
-  (f.func<&rigid_body::motion_type_ui::custom_inspect>)("custom_inspect"_hs);
   (f.data<&rigid_body::motion_type_ui::value>)("value"_hs)
       .custom<comp::meta_info> (comp::meta_info{
           "Motion Type", "How the physics solver drives this body", "" });
-}
-
-bool
-rigid_body::motion_type_ui::custom_inspect (
-    const char *label, comp::singl::runtime_context * /*unused*/)
-{
-  static const char *const names[] = { "Static", "Kinematic", "Dynamic" };
-  static const phys::motion_type vals[]
-      = { phys::motion_type::Static, phys::motion_type::Kinematic,
-          phys::motion_type::Dynamic };
-
-  int cur = 0;
-  for (int i = 0; i < 3; ++i) {
-    if (value == vals[i]) {
-      cur = i;
-      break;
-    }
-  }
-
-  bool changed = false;
-  if (ImGui::BeginCombo (label, names[cur])) {
-    for (int i = 0; i < 3; ++i) {
-      const bool sel = (i == cur);
-      if (ImGui::Selectable (names[i], sel)) {
-        value = vals[i];
-        changed = true;
-      }
-      if (sel) {
-        ImGui::SetItemDefaultFocus ();
-      }
-    }
-    ImGui::EndCombo ();
-  }
-
-  return changed;
 }
 
 // ---------------- rigid_body::collision_layer_ui ----------------
@@ -210,25 +59,11 @@ rigid_body::collision_layer_ui::register_meta ()
 
   auto &&f = entt::meta_factory<rigid_body::collision_layer_ui> ().type (
       entt::type_hash<rigid_body::collision_layer_ui>::value ());
-  (f.func<
-      &rigid_body::collision_layer_ui::custom_inspect>)("custom_inspect"_hs);
   (f.data<&rigid_body::collision_layer_ui::value>)("value"_hs)
       .custom<comp::meta_info> (comp::meta_info{
           "Collision Layer",
           "Index of the single collision layer this body belongs to (0-7)",
           "" });
-}
-
-bool
-rigid_body::collision_layer_ui::custom_inspect (
-    const char *label, comp::singl::runtime_context * /*unused*/)
-{
-  return draw_layer_grid (
-      label, [this] (uint32_t index) { return value == index; },
-      [this] (uint32_t index) {
-        value = phys::layers::clamp_layer_index (
-            static_cast<phys::layers::layer_index_t> (index));
-      });
 }
 
 // ---------------- rigid_body::collision_mask_ui ----------------
@@ -240,33 +75,12 @@ rigid_body::collision_mask_ui::register_meta ()
 
   auto &&f = entt::meta_factory<rigid_body::collision_mask_ui> ().type (
       entt::type_hash<rigid_body::collision_mask_ui>::value ());
-  (f.func<&rigid_body::collision_mask_ui::custom_inspect>)("custom_inspect"_hs);
   (f.data<&rigid_body::collision_mask_ui::value>)("value"_hs)
       .custom<comp::meta_info> (comp::meta_info{
           "Collision Mask",
           "Bitmask of collision layers this body collides with; bit N is "
           "layer N, e.g. 255 = all 8 layers",
           "" });
-}
-
-bool
-rigid_body::collision_mask_ui::custom_inspect (
-    const char *label, comp::singl::runtime_context * /*unused*/)
-{
-  return draw_layer_grid (
-      label,
-      [this] (uint32_t index) {
-        return (value
-                & phys::layers::bit_for_layer (
-                    static_cast<phys::layers::layer_index_t> (index)))
-               != 0;
-      },
-      [this] (uint32_t index) {
-        const phys::layers::layer_mask_t bit = phys::layers::bit_for_layer (
-            static_cast<phys::layers::layer_index_t> (index));
-        value = (value & bit) != 0 ? value & ~bit : value | bit;
-        value = phys::layers::clamp_layer_mask (value);
-      });
 }
 
 // ---------------- rigid_body runtime ----------------

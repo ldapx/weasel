@@ -2,7 +2,7 @@
 // test_event_bus.cpp.
 #include "doctest.h"
 
-#include "editor/physics_debug_drawer.hpp"
+#include "wsl/debug/physics_debug_drawer.hpp"
 #include "wsl/phys/physics_engine.hpp"
 
 #include <vector>
@@ -85,8 +85,8 @@ TEST_CASE ("debug draw appends instead of replacing the caller's lines")
   REQUIRE (is_valid_body_id (physics.create_body (box)));
 
   std::vector<debug_line> lines;
-  lines.push_back (debug_line{ { 0.0F, 0.0F, 0.0F },
-                               { 1.0F, 1.0F, 1.0F }, 0x123456U });
+  lines.push_back (
+      debug_line{ { 0.0F, 0.0F, 0.0F }, { 1.0F, 1.0F, 1.0F }, 0x123456U });
   const std::size_t seed_count = lines.size ();
 
   physics.draw_debug (lines);
@@ -109,8 +109,7 @@ TEST_CASE ("debug draw stays empty for an empty world")
 namespace
 {
 /** Test double standing in for the scene renderer's line pass. */
-struct capture_renderer final
-    : wsl::debug::debug_renderer_interface
+struct capture_renderer final : wsl::debug::debug_renderer_interface
 {
   struct segment
   {
@@ -154,7 +153,7 @@ TEST_CASE ("draw_physics_debug forwards collider wireframes to the renderer")
 
   capture_renderer renderer;
   renderer.begin_frame ();
-  editor::draw_physics_debug (physics, renderer);
+  wsl::debug::draw_physics_debug (physics, renderer);
 
   REQUIRE (renderer.segments.size () == 12);
   for (const capture_renderer::segment &segment : renderer.segments) {

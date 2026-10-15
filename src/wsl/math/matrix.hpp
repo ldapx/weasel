@@ -10,10 +10,6 @@
 #include <glm/glm.hpp>
 #endif
 
-#ifndef IN_MODULE_INTERFACE
-#include <imgui.h>
-#endif
-
 namespace wsl
 {
 
@@ -87,33 +83,7 @@ public:
     return !(*this == other);
   }
 
-  bool
-  custom_inspect (const char *label)
-  {
-    ImGui::PushID (label);
-
-    float const full = ImGui::CalcItemWidth ();
-    float const spacing = ImGui::GetStyle ().ItemInnerSpacing.x;
-    float const width = (full - (spacing * 2.0F)) / 3.0F;
-
-    bool changed = false;
-
-    for (int row = 0; row < 3; ++row) {
-      ImGui::PushID (row);
-      for (int col = 0; col < 3; ++col) {
-        ImGui::SetNextItemWidth (width);
-        if (col > 0) {
-          ImGui::SameLine (0.0F, spacing);
-        }
-        changed |= ImGui::DragFloat (
-            "##v", &m_data[static_cast<ptrdiff_t> ((col * 3) + row)], 0.1F);
-      }
-      ImGui::PopID ();
-    }
-
-    ImGui::PopID ();
-    return changed;
-  }
+  bool custom_inspect (const char *label);
 
   static void
   register_meta ()
@@ -121,7 +91,6 @@ public:
     using namespace entt::literals;
     auto &&factory = entt::meta_factory<mat33f> ().type (
         entt::type_hash<mat33f>::value ());
-    (factory.func<&mat33f::custom_inspect>)("custom_inspect"_hs);
   }
 };
 
@@ -210,33 +179,7 @@ public:
     return !(*this == other);
   }
 
-  bool
-  custom_inspect (const char *label)
-  {
-    ImGui::PushID (label);
-
-    float const full = ImGui::CalcItemWidth ();
-    float const spacing = ImGui::GetStyle ().ItemInnerSpacing.x;
-    float const width = (full - (spacing * 3.0F)) / 4.0F;
-
-    bool changed = false;
-
-    for (int row = 0; row < 4; ++row) {
-      ImGui::PushID (row);
-      for (int col = 0; col < 4; ++col) {
-        ImGui::SetNextItemWidth (width);
-        if (col > 0) {
-          ImGui::SameLine (0.0F, spacing);
-        }
-        changed |= ImGui::DragFloat (
-            "##v", &m_data[static_cast<ptrdiff_t> ((col * 4) + row)], 0.1F);
-      }
-      ImGui::PopID ();
-    }
-
-    ImGui::PopID ();
-    return changed;
-  }
+  bool custom_inspect (const char *label);
 
   static void
   register_meta ()
@@ -244,7 +187,6 @@ public:
     using namespace entt::literals;
     auto &&factory = entt::meta_factory<mat44f> ().type (
         entt::type_hash<mat44f>::value ());
-    (factory.func<&mat44f::custom_inspect>)("custom_inspect"_hs);
   }
 };
 } // namespace math

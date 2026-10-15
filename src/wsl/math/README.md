@@ -1,12 +1,12 @@
 # `wsl::math` — Math Utilities
 
-Core math types used across the engine, primarily vectors and quaternions with interop between GLM and ImGui.
+Core math types used across the engine, primarily vectors and quaternions with interop between GLM and the engine.
 
 ## Types
 
 | Type | Header | Description |
 |------|--------|-------------|
-| `vec3f` | `vector.hpp` | 3-component float vector with GLM ↔ ImGui conversions. Built-in `custom_inspect` for editor UI. |
+| `vec3f` | `vector.hpp` | 3-component float vector with GLM conversions. Declares `custom_inspect` for editor UI (implemented in editor_support). |
 | `quatf` | `vector.hpp` | Quaternion (x, y, z, w) with GLM conversion. |
 
 ## `vec3f`
@@ -21,7 +21,8 @@ glm::vec3 gv = v;
 v += glm::vec3{ 0, 1, 0 };
 v -= glm::vec3{ 1, 0, 0 };
 
-// Editor inspector (ImGui)
+// Editor inspector (ImGui widget lives in editor_support; the declaration
+// is here so generic tooling and the editor can look it up via entt meta)
 bool changed = v.custom_inspect("Position");
 
 // Serialization

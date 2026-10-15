@@ -3,7 +3,7 @@
 #include "wsl/comp/singl/runtime_context_fwd.hpp"
 #include "root.hpp"
 #include "wsl/event/event_hub.hpp"
-#include "wsl/editor/editor_ui_layer_interface.hpp"
+#include "editor_support/editor_ui_layer_interface.hpp"
 
 #include <entt/entity/fwd.hpp>
 #include <imgui.h>

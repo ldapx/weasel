@@ -40,7 +40,6 @@
 #include <exception>
 #include <filesystem>
 #include <future>
-#include <imgui.h>
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <optional>
@@ -271,54 +270,10 @@ rsc::resource_manager_view::register_meta ()
                 "Owns project resources and background loading for "
                 "the current runtime.",
                 "" });
-  (factory_v
-       .func<&rsc::resource_manager_view::custom_inspect>)("custom_inspect"_hs);
 
   rsc::model_id::register_meta ();
   rsc::audio_id::register_meta ();
   rsc::material_id::register_meta ();
-}
-
-bool
-rsc::resource_manager_view::custom_inspect (
-    const char *label, comp::singl::runtime_context *runtime_ctx) const
-{
-  (void)label;
-  (void)runtime_ctx;
-
-  if (manager == nullptr) {
-    ImGui::TextDisabled ("No resource manager");
-    return false;
-  }
-
-  std::shared_ptr<rsc::project> const project = manager->current_project ();
-  ImGui::TextDisabled ("Project");
-  if (project) {
-    ImGui::TextWrapped ("%s", project->name.c_str ());
-    ImGui::TextDisabled ("%s", project->root_path.c_str ());
-  } else {
-    ImGui::TextDisabled ("No project loaded");
-  }
-
-  ImGui::Spacing ();
-  ImGui::Separator ();
-  ImGui::Spacing ();
-
-  ImGui::TextDisabled ("Registered Resources");
-  ImGui::BulletText ("Models: %zu", manager->list_models ().size ());
-  ImGui::BulletText ("Images: %zu", manager->list_images ().size ());
-  ImGui::BulletText ("Cubemaps: %zu", manager->list_cubemaps ().size ());
-  ImGui::BulletText ("Scenes: %zu", manager->list_scenes ().size ());
-  ImGui::BulletText ("Audio: %zu", manager->list_audio ().size ());
-
-  const rsc::model_id preview = manager->current_preview_model ();
-  if (preview.value != entt::null) {
-    ImGui::Spacing ();
-    ImGui::TextDisabled ("Preview Model: %08X",
-                         static_cast<uint32_t> (preview.value));
-  }
-
-  return false;
 }
 
 rsc::resource_manager::model_handle
@@ -1569,10 +1524,8 @@ rsc::resource_manager::load_project (const std::string &path)
   m_active_project_load = project_load_job{
     .project_data = proj,
     .assets_job = std::async (
-      std::launch::async,
-        [this, proj] () {
-          return m_project_loader.scan_assets (*proj);
-        }),
+        std::launch::async,
+        [this, proj] () { return m_project_loader.scan_assets (*proj); }),
     .has_runtime_code = has_runtime_code
   };
 
@@ -2119,65 +2072,6 @@ rsc::resource_manager::is_preview_owned (model_id id) const
   return m_preview_model_id == id.value;
 }
 
-bool
-rsc::model_id::custom_inspect (const char *label,
-                               comp::singl::runtime_context *runtime)
-{
-  rsc::resource_manager *res_mgr
-      = (runtime != nullptr) ? &runtime->resource_manager () : nullptr;
-  if (res_mgr == nullptr) {
-    ImGui::TextDisabled ("No resource manager");
-    return false;
-  }
-
-  const char *preview = "None";
-  char preview_buf[256];
-
-  if (value != entt::null) {
-    if (std::optional<model_resource_info> rec
-        = res_mgr->info (model_id{ value })) {
-      std::snprintf (preview_buf, sizeof (preview_buf), "%s (%s)",
-                     rec->name.c_str (), rec->path.c_str ());
-    } else {
-      std::snprintf (preview_buf, sizeof (preview_buf), "(%08X)",
-                     (uint32_t)value);
-    }
-    preview = preview_buf;
-  }
-
-  bool changed = false;
-
-  if (ImGui::BeginCombo (label, preview)) {
-
-    if (ImGui::Selectable ("None", value == entt::null)) {
-      value = entt::null;
-      changed = true;
-    }
-
-    for (const model_resource_info &rec : res_mgr->list_models ()) {
-      const bool selected = (rec.id == value);
-
-      char item_buf[256];
-      std::snprintf (item_buf, sizeof (item_buf), "%s (%s)", rec.name.c_str (),
-                     rec.path.c_str ());
-
-      if (ImGui::Selectable (item_buf, selected)) {
-        value = rec.id;
-        static_cast<void> (res_mgr->load (model_id{ rec.id }));
-        changed = true;
-      }
-
-      if (selected) {
-        ImGui::SetItemDefaultFocus ();
-      }
-    }
-
-    ImGui::EndCombo ();
-  }
-
-  return changed;
-}
-
 std::string
 rsc::resource_manager::resolve_path (const std::string &path) const
 {
@@ -2414,61 +2308,8 @@ rsc::model_id::register_meta ()
   // IMPORTANT: register the hook
   // Signature: bool model_id::custom_inspect(const char*,
   // runtime_context*)
-  (factory_mi.func<&rsc::model_id::custom_inspect>)("custom_inspect"_hs);
 
   (factory_mi.data<&rsc::model_id::value>)("value"_hs);
-}
-
-bool
-rsc::audio_id::custom_inspect (const char *label,
-                               comp::singl::runtime_context *runtime)
-{
-  rsc::resource_manager const *res_mgr
-      = (runtime != nullptr) ? &runtime->resource_manager () : nullptr;
-  if (res_mgr == nullptr) {
-    ImGui::TextDisabled ("No resource manager");
-    return false;
-  }
-
-  const char *preview = "None";
-  char preview_buf[256];
-
-  if (value != entt::null) {
-    if (std::optional<audio_resource_info> rec
-        = res_mgr->info (audio_id{ value })) {
-      std::snprintf (preview_buf, sizeof (preview_buf), "%s (%s)",
-                     rec->name.c_str (), rec->path.c_str ());
-    } else {
-      std::snprintf (preview_buf, sizeof (preview_buf), "(%08X)",
-                     (uint32_t)value);
-    }
-    preview = preview_buf;
-  }
-
-  bool changed = false;
-
-  if (ImGui::BeginCombo (label, preview)) {
-
-    if (ImGui::Selectable ("None", value == entt::null)) {
-      value = entt::null;
-      changed = true;
-    }
-
-    for (const auto &rec : res_mgr->list_audio ()) {
-      const bool selected = (rec.id == value);
-      if (ImGui::Selectable (rec.name.c_str (), selected)) {
-        value = rec.id;
-        changed = true;
-      }
-      if (selected) {
-        ImGui::SetItemDefaultFocus ();
-      }
-    }
-
-    ImGui::EndCombo ();
-  }
-
-  return changed;
 }
 
 void
@@ -2478,67 +2319,7 @@ rsc::audio_id::register_meta ()
 
   auto &&factory_ai = entt::meta_factory<rsc::audio_id> ().type (
       entt::type_hash<rsc::audio_id>::value ());
-  (factory_ai.func<&rsc::audio_id::custom_inspect>)("custom_inspect"_hs);
   (factory_ai.data<&rsc::audio_id::value>)("value"_hs);
-}
-
-bool
-rsc::material_id::custom_inspect (const char *label,
-                                  comp::singl::runtime_context *runtime)
-{
-  rsc::resource_manager *res_mgr
-      = (runtime != nullptr) ? &runtime->resource_manager () : nullptr;
-  if (res_mgr == nullptr) {
-    ImGui::TextDisabled ("No resource manager");
-    return false;
-  }
-
-  const char *preview = "None";
-  char preview_buf[256];
-
-  if (value != entt::null) {
-    if (std::optional<material_resource_info> rec
-        = res_mgr->info (material_id{ value })) {
-      std::snprintf (preview_buf, sizeof (preview_buf), "%s (%s)",
-                     rec->name.c_str (), rec->path.c_str ());
-    } else {
-      std::snprintf (preview_buf, sizeof (preview_buf), "(%08X)",
-                     (uint32_t)value);
-    }
-    preview = preview_buf;
-  }
-
-  bool changed = false;
-
-  if (ImGui::BeginCombo (label, preview)) {
-
-    if (ImGui::Selectable ("None", value == entt::null)) {
-      value = entt::null;
-      changed = true;
-    }
-
-    for (const auto &rec : res_mgr->list_materials ()) {
-      const bool selected = (rec.id == value);
-
-      char item_buf[256];
-      std::snprintf (item_buf, sizeof (item_buf), "%s (%s)", rec.name.c_str (),
-                     rec.path.c_str ());
-
-      if (ImGui::Selectable (item_buf, selected)) {
-        value = rec.id;
-        static_cast<void> (res_mgr->load (material_id{ rec.id }));
-        changed = true;
-      }
-
-      if (selected) {
-        ImGui::SetItemDefaultFocus ();
-      }
-    }
-
-    ImGui::EndCombo ();
-  }
-
-  return changed;
 }
 
 void
@@ -2548,66 +2329,7 @@ rsc::material_id::register_meta ()
 
   auto &&factory_mati = entt::meta_factory<rsc::material_id> ().type (
       entt::type_hash<rsc::material_id>::value ());
-  (factory_mati.func<&rsc::material_id::custom_inspect>)("custom_inspect"_hs);
   (factory_mati.data<&rsc::material_id::value>)("value"_hs);
-}
-
-bool
-rsc::image_id::custom_inspect (const char *label,
-                               comp::singl::runtime_context *runtime)
-{
-  rsc::resource_manager *res_mgr
-      = (runtime != nullptr) ? &runtime->resource_manager () : nullptr;
-  if (res_mgr == nullptr) {
-    ImGui::TextDisabled ("No resource manager");
-    return false;
-  }
-
-  const char *preview = "None";
-  char preview_buf[256];
-
-  if (value != entt::null) {
-    if (std::optional<image_resource_info> rec
-        = res_mgr->info (image_id{ value })) {
-      std::snprintf (preview_buf, sizeof (preview_buf), "%s (%s)",
-                     rec->name.c_str (), rec->path.c_str ());
-    } else {
-      std::snprintf (preview_buf, sizeof (preview_buf), "(%08X)",
-                     (uint32_t)value);
-    }
-    preview = preview_buf;
-  }
-
-  bool changed = false;
-
-  if (ImGui::BeginCombo (label, preview)) {
-    if (ImGui::Selectable ("None", value == entt::null)) {
-      value = entt::null;
-      changed = true;
-    }
-
-    for (const image_resource_info &rec : res_mgr->list_images ()) {
-      const bool selected = (rec.id == value);
-
-      char item_buf[256];
-      std::snprintf (item_buf, sizeof (item_buf), "%s (%s)", rec.name.c_str (),
-                     rec.path.c_str ());
-
-      if (ImGui::Selectable (item_buf, selected)) {
-        value = rec.id;
-        static_cast<void> (res_mgr->load (image_id{ rec.id }));
-        changed = true;
-      }
-
-      if (selected) {
-        ImGui::SetItemDefaultFocus ();
-      }
-    }
-
-    ImGui::EndCombo ();
-  }
-
-  return changed;
 }
 
 void
@@ -2617,7 +2339,6 @@ rsc::image_id::register_meta ()
 
   auto &&factory_ii = entt::meta_factory<rsc::image_id> ().type (
       entt::type_hash<rsc::image_id>::value ());
-  (factory_ii.func<&rsc::image_id::custom_inspect>)("custom_inspect"_hs);
   (factory_ii.data<&rsc::image_id::value>)("value"_hs);
 }
 

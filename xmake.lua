@@ -531,12 +531,12 @@ package("rmlui")
     set_license("MIT")
     add_urls("https://github.com/Mario1159/RmlUi.git")
     add_versions("master", "master")
-    add_deps("cmake", "libsdl3", "freetype")
+    add_deps("cmake", "libsdl3", "freetype", "lunasvg")
     on_install(function (package)
         local configs = {}
         table.insert(configs, "-DCMAKE_BUILD_TYPE=" .. (package:is_debug() and "Debug" or "Release"))
         table.insert(configs, "-DBUILD_SHARED_LIBS=" .. (package:config("shared") and "ON" or "OFF"))
-        table.insert(configs, "-DRMLUI_ENABLE_SVG=ON")
+        table.insert(configs, "-DRMLUI_SVG_PLUGIN=ON")
         table.insert(configs, "-DRMLUI_FONT_ENGINE=freetype")
         table.insert(configs, "-DRMLUI_SDL_VERSION_MAJOR=3")
         table.insert(configs, "-DBUILD_SAMPLES=OFF")
@@ -629,6 +629,13 @@ end
 -- C++20 modules — Phase C (ABI-breaking, single wsl.core)
 option("with_modules", {default = false, showmenu = true, description = "Enable C++20 modules (wsl.core)"})
 
+-- Editor support: builds the `editor_support` library (ImGui editor
+-- framework + inspector widgets) plus the editor binaries (`weasel` ImGui
+-- editor and `weasel-rmlui` RmlUi editor). The core library (`libwsl`) is
+-- ImGui-free in every configuration; disable this for runtime-only builds
+-- (cli/mcp/custom front-ends).
+option("weasel_editor_support", {default = true, showmenu = true, description = "Build the editor support library and editor binaries"})
+
 -- always need doctest for tests
 add_requires("doctest")
 
@@ -648,6 +655,7 @@ local vertex_shaders = {
     "rsc/shaders/outline.vert.slang",
     "rsc/shaders/grid.vert.slang",
     "rsc/shaders/sprite_2d.vert.slang",
+    "rsc/shaders/editor_blit.vert.slang",
 }
 local fragment_shaders = {
     "rsc/shaders/cube.frag.slang",
@@ -673,6 +681,7 @@ local fragment_shaders = {
     "rsc/shaders/outline.frag.slang",
     "rsc/shaders/equirect_to_cube.frag.slang",
     "rsc/shaders/grid.frag.slang",
+    "rsc/shaders/editor_blit.frag.slang",
 }
 local compute_shaders = {
     "rsc/shaders/cluster_build.slang",
@@ -718,9 +727,6 @@ target("wsl")
             remove_files("src/wsl/gfx/renderdoc_load_windows.cpp")
         end
         add_files("cmake/stb/stb_image_impl.c")
-        -- editor helpers compiled into wsl (guarded by WEASEL_BUILD_EDITOR)
-        -- renderer_imgui.cpp compiled in weasel binary (single imgui copy)
-        add_files("src/editor/physics_debug_drawer.cpp")
     end
 
     -- handle renderdoc opt-out and daslang opt-out (keep das_engine.cpp stub)
@@ -755,7 +761,8 @@ target("wsl")
     add_defines("WSL_HAS_BOX3D=1")
     add_defines("WSL_PHYSICS_BACKEND_BOX3D=1", {public = true})
     add_packages("box3d")
-    add_defines("WEASEL_BUILD_EDITOR")
+    -- NOTE: libwsl is ImGui-free. Editor UI code (framework + inspector
+    -- widgets) lives in the editor_support target.
     if is_config("weasel_enable_multiplayer", true) then
         add_defines("WEASEL_ENABLE_MULTIPLAYER", {public = true})
     end
@@ -771,12 +778,11 @@ target("wsl")
     add_cxxflags("-Wall", "-Wextra", "-Wpedantic", "-rdynamic", {force = true})
 
     -- packages — core deps (slang/gns/daslang conditional)
-    add_packages("entt", "glm", "spdlog", "fmt", "reflect-cpp", "box3d", "rmlui", "fastgltf", "meshoptimizer", "simdjson", "libsdl3", "libsdl3_image", "libsdl3_mixer", "tracy", "imgui", "stb", "nlohmann_json", "libarchive", "rapidjson", {public = false})
+    add_packages("entt", "glm", "spdlog", "fmt", "reflect-cpp", "box3d", "rmlui", "fastgltf", "meshoptimizer", "simdjson", "libsdl3", "libsdl3_image", "libsdl3_mixer", "tracy", "stb", "nlohmann_json", "libarchive", "rapidjson", {public = false})
     add_defines("REFLECT_CPP_C_ARRAYS_OR_INHERITANCE", {public = true})
     if has_config("with_slang") then add_packages("slang") end
     -- Public packages exported to downstream targets (editor, cli, mcp-server, tests)
     add_packages("tracy", {public = true})
-    add_packages("imgui", {public = true})
     add_packages("entt", {public = true})
     add_packages("box3d", {public = true})
     add_packages("glm", {public = true})
@@ -811,11 +817,6 @@ target("wsl")
     -- (WEASEL_DASLANG_ROOT env var, then the newest xmake package install).
     -- Target hooks (on_load/after_load/on_config) proved unreliable across
     -- xmake runs for injecting the package installdir as a define.
-
-    -- editor UI helpers that wsl links (mirrors CMake wsl target) — optional
-    add_packages("imguitextselect", {optional = true})
-    add_packages("imsearch", {optional = true})
-    add_packages("imguicolortextedit", {optional = true})
 
     -- link system libs (AF_UNIX sockets need ws2_32 on Windows)
     if is_plat("windows") then
@@ -1128,20 +1129,36 @@ target("docs")
     end)
 
 -- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- editor_support — ImGui editor framework + inspector widgets (not in core)
+-- ---------------------------------------------------------------------------
+target("editor_support")
+    set_kind("static")
+    set_languages("c++20")
+    set_enabled(is_config("weasel_editor_support", true))
+    add_files("src/editor_support/*.cpp")
+    add_includedirs("src", {public = true})
+    add_deps("wsl")
+    add_packages("imgui", {public = true})
+    add_defines("CPP_RTTI_ENABLED", "IMGUI_DEFINE_MATH_OPERATORS")
+    add_cxxflags("-Wall", "-Wextra", "-Wpedantic")
+
+-- ---------------------------------------------------------------------------
 -- weasel — editor binary
 -- ---------------------------------------------------------------------------
 target("weasel")
     set_kind("binary")
     set_languages("c++20")
+    set_enabled(is_config("weasel_editor_support", true))
     add_files("src/editor/**.cpp")
-    -- physics_debug_drawer stays in wsl; renderer_imgui.cpp is compiled here
-    remove_files("src/editor/physics_debug_drawer.cpp")
     add_includedirs("src", {public = true})
-    add_deps("wsl", "cli")
+    add_deps("wsl", "editor_support", "cli")
     -- Packages already exported public by wsl are resolved transitively.
-    -- Only list packages NOT on wsl here (cli11, editor UI helpers).
+    -- imgui is NOT public on wsl anymore (deeper decoupling), so the editor
+    -- lists it explicitly for its panels and the ImGui backend.
     -- DO NOT re-list wsl's public packages here — xmake links them
     -- BEFORE -lwsl, causing unresolved symbols from cross-archive deps.
+    add_packages("imgui")
     add_packages("cli11")
     -- chat_panel is the only A2A/ACP consumer left in the engine.
     add_packages("agentsdk")
@@ -1151,7 +1168,7 @@ target("weasel")
     add_packages("imgizmo2d", {optional = true})
     add_packages("imnodeflow", {optional = true})
     if has_config("with_slang") then add_packages("slang") end
-    add_defines("CPP_RTTI_ENABLED", "WEASEL_BUILD_EDITOR", "IMGUI_DEFINE_MATH_OPERATORS")
+    add_defines("CPP_RTTI_ENABLED", "IMGUI_DEFINE_MATH_OPERATORS")
     if is_config("weasel_enable_multiplayer", true) then add_defines("WEASEL_ENABLE_MULTIPLAYER") end
     add_defines("WEASEL_SOURCE_DIR=\"" .. projectdir_fwd .. "\"", "WEASEL_BUILD_DIR=\"" .. projectdir_fwd .. "/build\"", "TRACY_ENABLE")
     if has_config("weasel_enable_renderdoc") then
@@ -1187,6 +1204,53 @@ target("weasel")
             end
         end
     end)
+
+-- ---------------------------------------------------------------------------
+-- weasel-rmlui — next-generation editor with an RmlUi (HTML/CSS) UI
+-- ---------------------------------------------------------------------------
+target("weasel-rmlui")
+    set_kind("binary")
+    set_languages("c++20")
+    set_enabled(is_config("weasel_editor_support", true))
+    add_files("src/editor_rmlui/**.cpp")
+    add_includedirs("src", {public = true})
+    add_deps("wsl", "cli")
+    -- rmlui is public on wsl; adding it here lets the on_load hook resolve the
+    -- Backends include dir (RmlUi_Platform_SDL.h / RmlUi_Renderer_SDL_GPU.h).
+    add_packages("rmlui")
+    add_packages("cli11")
+    if has_config("with_slang") then add_packages("slang") end
+    add_defines("CPP_RTTI_ENABLED")
+    add_defines("WEASEL_SOURCE_DIR=\"" .. projectdir_fwd .. "\"", "WEASEL_BUILD_DIR=\"" .. projectdir_fwd .. "/build\"", "TRACY_ENABLE")
+    if is_config("weasel_enable_multiplayer", true) then add_defines("WEASEL_ENABLE_MULTIPLAYER") end
+    add_cxxflags("-Wall", "-Wextra", "-Wpedantic", "-rdynamic")
+    -- Debug symbols for the target's own objects (cheap; the core lib stays
+    -- release) so crashes in the editor layer are diagnosable.
+    set_symbols("debug")
+    if is_plat("windows") then
+        add_syslinks("ws2_32")
+    else
+        add_syslinks("dl", "pthread")
+    end
+    add_deps("compile_shaders")
+    -- RmlUi backend headers (compiled into wsl, headers needed here)
+    on_load(function (target)
+        local rmlui = target:pkg("rmlui")
+        if rmlui then
+            local backend_dir = path.join(rmlui:installdir(), "Backends")
+            if os.isdir(backend_dir) then
+                target:add("includedirs", backend_dir)
+            end
+        end
+    end)
+    -- install rules
+    set_installdir("$(bindir)")
+    set_prefixdir("$(install_prefix)")
+    add_installfiles("$(builddir)/$(arch)/$(mode)/weasel-rmlui", {prefixdir = "bin"})
+    add_installfiles(path.join(os.projectdir(), "build", "compiled_shaders", "*"), {prefixdir = "share/weasel/compiled_shaders"})
+    add_installfiles(path.join(os.projectdir(), "rsc/otf", "*"), {prefixdir = "share/weasel/otf"})
+    add_installfiles(path.join(os.projectdir(), "rsc/icons", "*"), {prefixdir = "share/weasel/icons"})
+    add_installfiles(path.join(os.projectdir(), "rsc/editor_rml", "*"), {prefixdir = "share/weasel/editor_rml"})
 
 -- ---------------------------------------------------------------------------
 -- cli — static lib + weasel-cli binary

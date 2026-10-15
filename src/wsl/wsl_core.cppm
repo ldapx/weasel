@@ -159,8 +159,7 @@ export {
 #include "event.hpp"
 #include "input.hpp"
 #include "ray.hpp"
-#include "editor/ui_system_interface.hpp"
-#include "editor/editor_ui_layer_interface.hpp"
+#include "gfx/ui_system_interface.hpp"
 #include "das/das_api_catalog.gen.hpp"
 #include "das/wsl_api_module.hpp"
 #include "das/das_engine.hpp"
@@ -192,7 +191,6 @@ export {
 #include "gfx/tracy_gpu_mem.hpp"
 #include "gfx/pipeline_cache.hpp"
 #include "gfx/viewport.hpp"
-#include "gfx/imgui_renderer_interface.hpp"
 #include "gfx/material.hpp"
 #include "gfx/shader.hpp"
 #include "gfx/cubemap.hpp"
@@ -265,5 +263,4 @@ export {
 #include "das/wsl_api_component_accessors.hpp"
 #include "comp/singl/editor_context.hpp"
 #include "comp/components.hpp"
-#include "editor_app.hpp"
 }

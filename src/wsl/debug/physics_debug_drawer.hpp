@@ -8,7 +8,9 @@
 #include <memory>
 #include <vector>
 
-namespace editor
+namespace wsl
+{
+namespace debug
 {
 
 /**
@@ -20,8 +22,7 @@ namespace editor
  * build pass, and `end_frame` draws them while the 3D pass is open so they
  * depth-test against the scene.
  */
-class physics_debug_renderer final
-    : public wsl::debug::debug_renderer_interface
+class physics_debug_renderer final : public debug_renderer_interface
 {
 public:
   physics_debug_renderer (wsl::gfx::render_window &, wsl::gfx::render_context *)
@@ -45,7 +46,7 @@ private:
   std::vector<line> m_lines;
 };
 
-inline std::unique_ptr<wsl::debug::debug_renderer_interface>
+inline std::unique_ptr<debug_renderer_interface>
 make_physics_debug_renderer (wsl::gfx::render_window &window,
                              wsl::gfx::render_context *ctx)
 {
@@ -60,6 +61,7 @@ make_physics_debug_renderer (wsl::gfx::render_window &window,
  * :param renderer: Debug renderer collecting this frame's lines.
  */
 void draw_physics_debug (wsl::phys::engine &engine,
-                         wsl::debug::debug_renderer_interface &renderer);
+                         debug_renderer_interface &renderer);
 
-} // namespace editor
+} // namespace debug
+} // namespace wsl

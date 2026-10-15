@@ -24,9 +24,8 @@
 #include <unordered_map>
 #include <vector>
 
-#ifdef WEASEL_BUILD_EDITOR
+// The editor context is toolkit-neutral state; this header is ImGui-free.
 #include "wsl/comp/singl/editor_context.hpp"
-#endif
 #include "../comp/singl/rendering_manager.hpp"
 #include "../comp/singl/runtime_context.hpp"
 #include "../comp/camera.hpp"
@@ -587,13 +586,15 @@ core_systems::render_impl (wsl::gfx::render_window &window,
         main_viewport = entt::null;
       }
 
-#ifdef WEASEL_BUILD_EDITOR
+      // While the editor is paused, honour the viewport selected in its
+      // toolbars. This only needs the toolkit-neutral editor context state,
+      // so it works in runtime-only builds too (e.g. a future non-ImGui
+      // editor front-end).
       if (m_editor_ctx != nullptr) {
         if (!m_runtime_ctx->is_running ()) {
           main_viewport = m_editor_ctx->game_view_selected_viewport ();
         }
       }
-#endif
     }
 
     {
@@ -991,6 +992,12 @@ core_systems::render_impl (wsl::gfx::render_window &window,
     ZoneScopedN ("render_impl::ui_pass");
     if (render_ui_sys) {
       render_ui_sys->render_record_draw_cmd (&registry);
+    }
+
+    // Pass-owning UI backends (e.g. RmlUi's SDL_GPU render interface) draw
+    // here: the command buffer is open and no render pass is active.
+    if (callbacks.record_ui_overlay) {
+      callbacks.record_ui_overlay (registry);
     }
 
     window.begin_ui_pass ();

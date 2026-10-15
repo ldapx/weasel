@@ -12,10 +12,10 @@
 #include "comp/component_meta.hpp"
 #include "gfx/render_context.hpp"
 #include "gfx/render_window.hpp"
+#include "gfx/rml_runtime.hpp"
 #include "rsc/resource_manager.hpp"
 #include "runtime_context.hpp"
 #include <filesystem>
-#include <imgui.h>
 #include <string>
 
 namespace wsl
@@ -30,17 +30,34 @@ ui_manager::ui_manager (gfx::render_context &ctx,
                         wsl::gfx::render_window &window,
                         wsl::rsc::resource_manager *res_mgr)
 {
-  if (ctx.gpu_device == nullptr || window.handler() == nullptr) {
+  if (ctx.gpu_device == nullptr || window.handler () == nullptr) {
     wsl::log::editor ()->trace ("Headless mode, skipping RmlUi initialization");
     return;
   }
 
-  m_render_interface = std::make_unique<RenderInterface_SDL_GPU> (
-      ctx.gpu_device, window.handler());
+  // Attach to shared backends when an editor front-end published them; all
+  // RmlUi contexts must compile/render through one render interface because
+  // compiled geometry handles are per-interface.
+  m_render_interface = wsl::gfx::shared_ui_render_interface ();
+  if (m_render_interface == nullptr) {
+    m_owned_render_interface = std::make_unique<RenderInterface_SDL_GPU> (
+        ctx.gpu_device, window.handler ());
+    m_render_interface = m_owned_render_interface.get ();
+    Rml::SetRenderInterface (m_render_interface);
+  }
+
+  m_system_interface = wsl::gfx::shared_ui_system_interface ();
+  if (m_system_interface == nullptr) {
+    m_owned_system_interface
+        = std::make_unique<wsl::gfx::ui_system_interface> ();
+    m_system_interface = m_owned_system_interface.get ();
+    Rml::SetSystemInterface (m_system_interface);
+  }
+
   wsl::log::editor ()->trace ("Using GPU device {}", (void *)ctx.gpu_device);
-  Rml::SetRenderInterface (m_render_interface.get ());
-  Rml::SetSystemInterface (&m_system_interface);
-  Rml::Initialise ();
+  if (!wsl::gfx::rmlui_acquire ()) {
+    return;
+  }
 
   int width = 0;
   int height = 0;
@@ -66,7 +83,11 @@ ui_manager::~ui_manager ()
   }
 
   clear_scene_bindings ();
-  Rml::Shutdown ();
+  // Destroy only this context; RmlUi itself is torn down when the last
+  // acquire (this manager or an editor front-end) releases the runtime.
+  Rml::RemoveContext ("UI Context");
+  m_context = nullptr;
+  wsl::gfx::rmlui_release ();
 }
 
 void
@@ -81,66 +102,6 @@ ui_manager::register_meta ()
                 "Runtime-owned RmlUi context and renderer used "
                 "by the active scene.",
                 "" });
-  (factory_ui
-       .func<&comp::singl::ui_manager::custom_inspect>)("custom_inspect"_hs);
-}
-
-bool
-ui_manager::custom_inspect (const char *label,
-                            comp::singl::runtime_context *runtime)
-{
-  (void)label;
-  if (runtime == nullptr) {
-    return false;
-  }
-
-  auto &res_mgr = runtime->resource_manager ();
-  bool changed = false;
-
-  const char *preview = "None";
-  if (m_active_document_id.value != entt::null) {
-    if (auto info = res_mgr.info (m_active_document_id)) {
-      preview = info->name.c_str ();
-    }
-  }
-
-  if (ImGui::BeginCombo ("Active Document", preview)) {
-    if (ImGui::Selectable ("None",
-                           m_active_document_id.value == entt::null)) {
-      if (m_active_document_id.value != entt::null) {
-        m_active_document_id.value = entt::null;
-        m_needs_reload = true;
-        changed = true;
-      }
-    }
-
-    for (const auto &info : res_mgr.list_ui_layouts ()) {
-      std::filesystem::path const p (info.path);
-      if (p.extension () != ".rml") {
-        continue;
-      }
-
-      const bool selected = (info.id == m_active_document_id.value);
-      if (ImGui::Selectable (info.name.c_str (), selected)) {
-        m_active_document_id.value = info.id;
-        m_needs_reload = true;
-        changed = true;
-      }
-      if (selected) {
-        ImGui::SetItemDefaultFocus ();
-      }
-    }
-    ImGui::EndCombo ();
-  }
-
-  if (m_active_document_id.value != entt::null) {
-    if (ImGui::Button ("Reload Document")) {
-      m_needs_reload = true;
-      changed = true;
-    }
-  }
-
-  return changed;
 }
 
 void

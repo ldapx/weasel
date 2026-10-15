@@ -127,7 +127,7 @@ struct animator : world_component
 
   /**
    * Editor-facing UI: a per-model clip dropdown, transport controls and a
-   * scrub bar. Defined in animator.cpp because it pulls in ImGui.
+   * scrub bar. Defined in editor_support (inspectors_components.cpp).
    * @return true when a field changed and the entity should be marked dirty.
    */
   bool custom_inspect (const char *label,

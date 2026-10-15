@@ -43,12 +43,9 @@ TEST_CASE ("wsl.math module consumer round-trip")
   m.data ()[0] = 2.0F;
   CHECK (m.data ()[0] == 2.0F);
 
-  // The inline entt/ImGui-facing members compile and link through the module
+  // The entt-facing members compile and link through the module
   // (their third-party deps live in the GMF, shared with legacy TUs).
   wsl::math::vec2f::register_meta ();
-  bool (wsl::math::vec2f::*inspect_fn) (const char *)
-      = &wsl::math::vec2f::custom_inspect;
-  CHECK (inspect_fn != nullptr);
 }
 
 TEST_CASE ("wsl.event module consumer")

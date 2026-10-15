@@ -1,6 +1,6 @@
 #pragma once
 
-#include "editor/ui_system_interface.hpp"
+#include "wsl/gfx/ui_system_interface.hpp"
 #ifndef IN_MODULE_INTERFACE
 #include <RmlUi/Core.h>
 #endif
@@ -46,11 +46,6 @@
 namespace wsl
 {
 
-// The ui_system_interface class lives in ::editor (not wsl::editor).
-// Pull it into wsl:: so that unqualified "editor::ui_system_interface"
-// resolves correctly inside wsl::comp::singl below.
-using ::editor::ui_system_interface;
-
 namespace comp
 {
 
@@ -89,24 +84,19 @@ public:
   // -- getters / setters
   // -------------------------------------------------------
 
-  const wsl::ui_system_interface &
+  const wsl::gfx::ui_system_interface &
   system_interface () const
   {
-    return m_system_interface;
+    return *m_system_interface;
   }
-  wsl::ui_system_interface &
+  wsl::gfx::ui_system_interface &
   system_interface ()
   {
-    return m_system_interface;
+    return *m_system_interface;
   }
 
   RenderInterface_SDL_GPU *
   render_interface () const
-  {
-    return m_render_interface.get ();
-  }
-  std::unique_ptr<RenderInterface_SDL_GPU> &
-  render_interface ()
   {
     return m_render_interface;
   }
@@ -167,8 +157,10 @@ public:
   }
 
 private:
-  wsl::ui_system_interface m_system_interface;
-  std::unique_ptr<RenderInterface_SDL_GPU> m_render_interface;
+  std::unique_ptr<wsl::gfx::ui_system_interface> m_owned_system_interface;
+  wsl::gfx::ui_system_interface *m_system_interface = nullptr;
+  std::unique_ptr<RenderInterface_SDL_GPU> m_owned_render_interface;
+  RenderInterface_SDL_GPU *m_render_interface = nullptr;
   Rml::Context *m_context = nullptr;
   Rml::ElementDocument *m_active_document_instance = nullptr;
   rsc::ui_layout_id m_active_document_id{ entt::null };

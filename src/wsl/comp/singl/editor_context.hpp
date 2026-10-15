@@ -43,12 +43,6 @@
 #include <cstdint>
 #endif
 
-#ifdef WEASEL_BUILD_EDITOR
-#ifndef IN_MODULE_INTERFACE
-#include <imgui.h>
-#endif
-#endif
-
 namespace wsl::gfx
 {
 class imgui_renderer_interface;
@@ -89,7 +83,9 @@ public:
     return m_runtime_ctx;
   }
 
-  // Editor-specific renderers (created by wsl::editor_app factory methods)
+  // Editor-specific renderers (created by wsl::editor_app factory methods).
+  // Both slots are owned here; the ImGui-typed accessors are implemented in
+  // editor_support so the core library stays free of ImGui headers.
   wsl::gfx::imgui_renderer_interface *get_imgui_renderer () const;
   wsl::debug::debug_renderer_interface *get_debug_renderer () const;
 
@@ -760,7 +756,9 @@ private:
   };
 
   wsl::comp::singl::runtime_context &m_runtime_ctx;
-  std::unique_ptr<wsl::gfx::imgui_renderer_interface> m_imgui_renderer;
+  // Type-erased so the core header needs no ImGui type. editor_support
+  // defines the typed get/set accessors; the deleter is captured there.
+  std::shared_ptr<void> m_imgui_renderer;
   std::unique_ptr<wsl::debug::debug_renderer_interface> m_debug_renderer;
 
   game_view_cam_mode m_game_view_camera_mode

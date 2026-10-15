@@ -5,9 +5,15 @@
 #include <RmlUi_Platform_SDL.h>
 #include <SDL3/SDL.h>
 
-namespace editor
+namespace wsl
+{
+namespace gfx
 {
 
+/**
+ * RmlUi system interface used by the runtime UI manager and the editors.
+ * SDL-backed timing/paths plus engine logging.
+ */
 class ui_system_interface : public SystemInterface_SDL
 {
 public:
@@ -19,4 +25,5 @@ public:
   }
 };
 
-} // namespace editor
+} // namespace gfx
+} // namespace wsl

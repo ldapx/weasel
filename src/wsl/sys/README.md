@@ -28,7 +28,7 @@ The CRTP helper `ecs_system_t<Derived>` provides automatic type ID and a `regist
 | `lighting_system` | `lighting_system.hpp` | Updates GPU lighting UBO from `point_light`/`spot_light`/`directional_light` components. |
 | `shadow_system` | `shadow_system.hpp` | Renders shadow maps for directional lights. |
 | `render_3d_system` | `render_3d_system.hpp` | Collects visible meshes and issues draw calls. |
-| `render_ui_system` | `render_ui_system.hpp` | Renders Dear ImGui UI overlay. |
+| `render_ui_system` | `render_ui_system.hpp` | Renders the RmlUi runtime UI overlay and forwards input to it. |
 | `render_frame` | `render_frame.hpp` | Frame lifecycle management (begin/end render passes). |
 | `skybox_system` | `skybox_system.hpp` | Renders the skybox cubemap. |
 | `audio_system` | `audio_system.hpp` | Plays and manages audio sources. |

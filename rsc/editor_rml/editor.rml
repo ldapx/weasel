@@ -1,0 +1,189 @@
+<rml>
+<head>
+	<title>Weasel Editor</title>
+	<link type="text/css" href="editor.rcss"/>
+</head>
+<body>
+	<!-- ======================= menu bar ======================= -->
+	<div id="menubar">
+		<div id="mb-file" class="mb-item">
+			<button id="btn-menu-file" class="menubtn">File</button>
+			<div id="menu-file" class="menu">
+				<div id="mi-new-project" class="menuitem">New Project...</div>
+				<div id="mi-load-project" class="menuitem">Load Project...</div>
+				<div class="menusep"></div>
+				<div id="mi-exit" class="menuitem">Exit</div>
+			</div>
+		</div>
+		<div id="mb-scene" class="mb-item">
+			<button id="btn-menu-scene" class="menubtn">Scene</button>
+			<div id="menu-scene" class="menu">
+				<div id="mi-load-scene" class="menuitem">Load Scene...</div>
+				<div id="mi-save-scene" class="menuitem">Save Scene...</div>
+				<div id="mi-reload-scene" class="menuitem">Reload Scene</div>
+			</div>
+		</div>
+		<div id="mb-window" class="mb-item">
+			<button id="btn-menu-window" class="menubtn">Window</button>
+			<div id="menu-window" class="menu">
+				<div id="mi-toggle-entities" class="menuitem">Entities</div>
+				<div id="mi-toggle-systems" class="menuitem">Systems</div>
+				<div id="mi-toggle-inspector" class="menuitem">Inspector</div>
+				<div id="mi-toggle-console" class="menuitem">Console</div>
+				<div id="mi-toggle-log" class="menuitem">Log</div>
+				<div class="menusep"></div>
+				<div id="mi-toggle-welcome" class="menuitem">Welcome</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- ================= left: entities / systems tabs ================= -->
+	<div id="left" class="panel">
+		<div class="tabbar">
+			<div id="tabbtn-entities" class="tab active">Entities</div>
+			<div id="tabbtn-systems" class="tab">Systems</div>
+			<div id="tabbtn-files" class="tab">Files</div>
+		</div>
+		<div id="left-entities" class="tabpage">
+			<div id="hierarchy" class="scroll"></div>
+			<div id="singletons-title" class="section-title">Singletons</div>
+			<div id="singletons" class="scroll"></div>
+		</div>
+		<div id="left-systems" class="tabpage hidden">
+			<div id="systems" class="scroll"></div>
+		</div>
+		<div id="left-files" class="tabpage hidden">
+			<div id="files-toolbar">
+				<button id="btn-files-refresh">Refresh</button>
+			</div>
+			<div id="files" class="scroll"></div>
+		</div>
+	</div>
+
+	<!-- ======================= right: inspector ======================= -->
+	<div id="right" class="panel">
+		<div class="tabbar">
+			<div id="tabbtn-inspector" class="tab active">Inspector</div>
+			<div id="tabbtn-build" class="tab">Build</div>
+		</div>
+		<div id="right-inspector" class="tabpage">
+			<div id="inspector" class="scroll"></div>
+		</div>
+		<div id="right-build" class="tabpage hidden">
+			<div id="build-actions">
+				<button id="btn-build-refresh">Refresh</button>
+				<button id="btn-build-configure">Configure</button>
+				<button id="btn-build-target">Build</button>
+				<button id="btn-build-test">Test</button>
+			</div>
+			<div id="build-lists" class="scroll"></div>
+		</div>
+	</div>
+
+	<!-- ======================= center: game view ======================= -->
+	<div id="gameview-toolbar">
+		<div class="tgroup">
+			<button id="btn-play">Play</button>
+			<button id="btn-pause">Pause</button>
+			<button id="btn-stop">Stop</button>
+		</div>
+		<span class="tsep"></span>
+		<div class="tgroup">
+			<button id="btn-translate">Move</button>
+			<button id="btn-rotate">Rotate</button>
+			<button id="btn-scale">Scale</button>
+		</div>
+		<span class="tsep"></span>
+		<div class="tgroup">
+			<button id="btn-refresh">Refresh</button>
+		</div>
+	</div>
+	<div id="gameview"></div>
+
+	<!-- ==================== bottom: console / log tabs ==================== -->
+	<div id="bottom" class="panel">
+		<div class="tabbar">
+			<div id="tabbtn-console" class="tab active">Console</div>
+			<div id="tabbtn-log" class="tab">Log</div>
+		</div>
+		<div id="bottom-console" class="tabpage">
+			<div id="console-output" class="scroll mono"></div>
+			<div id="console-input-wrap">
+				<input id="console-input" type="text" placeholder="type a command, e.g. help"/>
+			</div>
+		</div>
+		<div id="bottom-log" class="tabpage hidden">
+			<div id="log-filters">
+				<button id="btn-clear-log">Clear</button>
+				<button id="btn-log-autoscroll">Autoscroll: on</button>
+				<span class="lvsep"></span>
+				<button id="btn-lv-trace" class="lvbtn active">T</button>
+				<button id="btn-lv-debug" class="lvbtn active">D</button>
+				<button id="btn-lv-info" class="lvbtn active">I</button>
+				<button id="btn-lv-warn" class="lvbtn active">W</button>
+				<button id="btn-lv-error" class="lvbtn active">E</button>
+				<button id="btn-lv-fatal" class="lvbtn active">C</button>
+				<span class="lvsep"></span>
+				<select id="log-category">
+					<option value="All" selected="selected">All</option>
+					<option value="core">core</option>
+					<option value="gfx">gfx</option>
+					<option value="rsc">rsc</option>
+					<option value="sys">sys</option>
+					<option value="editor">editor</option>
+					<option value="cli">cli</option>
+					<option value="phys">phys</option>
+					<option value="net">net</option>
+					<option value="xmake">xmake</option>
+				</select>
+			</div>
+			<div id="log-output" class="scroll mono"></div>
+		</div>
+	</div>
+
+	<!-- ======================= status bar ======================= -->
+	<div id="statusbar">
+		<span id="status">EDIT</span>
+	</div>
+
+	<!-- ======================= resize handles ======================= -->
+	<div id="handle-left" class="handle-v"></div>
+	<div id="handle-right" class="handle-v"></div>
+	<div id="handle-bottom" class="handle-h"></div>
+
+	<!-- ======================= welcome overlay ======================= -->
+	<div id="welcome">
+		<div id="welcome-card">
+			<div id="welcome-title">WEASEL</div>
+			<div id="welcome-sub">Game engine editor</div>
+			<button id="welcome-new" class="btn--primary">New Project...</button>
+			<button id="welcome-load" class="btn--secondary">Load Project...</button>
+			<div class="form-title" id="recent-title">Recent projects</div>
+			<div id="recent-list" class="scroll"></div>
+		</div>
+	</div>
+
+	<!-- ======================= new project modal ======================= -->
+	<div id="modal-new-project">
+		<div id="np-card">
+			<div class="form-title">New Project</div>
+			<div class="form-row">
+				<span class="form-label">Project Name</span>
+				<input id="np-name" type="text" value="NewProject"/>
+			</div>
+			<div class="form-row">
+				<span class="form-label">Project Folder</span>
+				<input id="np-folder" type="text" value="./"/>
+				<button id="np-browse">...</button>
+			</div>
+			<div class="form-row">
+				<button id="np-create-folder">Create Folder: on</button>
+			</div>
+			<div class="form-row form-actions">
+				<button id="np-create" class="btn--primary">Create</button>
+				<button id="np-cancel" class="btn--secondary">Cancel</button>
+			</div>
+		</div>
+	</div>
+</body>
+</rml>

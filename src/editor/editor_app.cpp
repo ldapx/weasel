@@ -4,10 +4,10 @@
 #include "wsl/rsc/project.hpp"
 #include "wsl/rsc/project_loader.hpp"
 #include "wsl/rsc/resource_manager.hpp"
-#include "editor_server.hpp"
+#include "cli/editor_server.hpp"
 #include "cli/command_executor.hpp"
 #include "renderer_imgui.hpp"
-#include "physics_debug_drawer.hpp"
+#include "wsl/debug/physics_debug_drawer.hpp"
 #include "engine_ui.hpp"
 #include "wsl/log/log.hpp"
 #include <filesystem>
@@ -65,8 +65,9 @@ editor_app::editor_app (const std::string &name, int width, int height,
 {
   init_editor_subsystems ();
 
-  m_server = std::make_unique<editor_server> ();
-  m_server->set_editor_app (this);
+  m_server = std::make_unique<wsl::cli::editor_server> ();
+  m_server->set_command_handler (
+      [this] (const std::string &cmd) { return this->execute_command (cmd); });
 }
 
 editor_app::~editor_app () { m_server->stop (); }
@@ -172,7 +173,7 @@ std::unique_ptr<wsl::debug::debug_renderer_interface>
 editor_app::create_debug_renderer (wsl::gfx::render_window &window,
                                    wsl::gfx::render_context *ctx)
 {
-  return editor::make_physics_debug_renderer (window, ctx);
+  return wsl::debug::make_physics_debug_renderer (window, ctx);
 }
 
 std::unique_ptr<wsl::editor::editor_ui_layer_interface>

@@ -1,11 +1,12 @@
 #include "editor_app.hpp"
 
-#include "comp/singl/editor_context.hpp"
-#include "comp/singl/runtime_context.hpp"
-#include "das/das_engine.hpp"
-#include "reg/runtime_project_module.hpp"
-#include "reg/singleton_registry.hpp"
-#include "sys/core_systems.hpp"
+#include "editor_support/editor_inspectors.hpp"
+#include "wsl/comp/singl/editor_context.hpp"
+#include "wsl/comp/singl/runtime_context.hpp"
+#include "wsl/das/das_engine.hpp"
+#include "wsl/reg/runtime_project_module.hpp"
+#include "wsl/reg/singleton_registry.hpp"
+#include "wsl/sys/core_systems.hpp"
 #include <spdlog/spdlog.h>
 
 namespace wsl
@@ -23,6 +24,10 @@ editor_app::editor_app (const std::string &name, int width, int height,
   m_runtime_context->singleton_registry ()
       .register_bound_singleton_component<comp::singl::editor_context> (
           { "Editor Context", true });
+
+  // Re-register the ImGui inspector widgets on top of the core meta data
+  // (they live in editor_support, not in the core library).
+  editor::register_editor_inspectors ();
 }
 
 editor_app::~editor_app () {}

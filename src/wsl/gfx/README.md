@@ -35,7 +35,7 @@ SDL_GPU-based renderer with mesh, shader, material, texture, and post-processing
   Tonemap → LDR Present Texture
        │
        ▼
-  UI Pass (ImGui overlay)
+  UI Pass (RmlUi overlay)
        │
        ▼
   Swapchain Present
@@ -61,7 +61,7 @@ SDL_DrawGPUIndexedPrimitives(pass, model->index_count, 1, 0, 0, 0);
 window.end_3d_pass();
 window.postprocess_hdr_bloom();
 window.begin_ui_pass();
-// ... ImGui draw ...
+// ... RmlUi draw ...
 window.end_ui_pass();
 
 // Load shaders

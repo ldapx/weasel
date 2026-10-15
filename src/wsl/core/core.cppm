@@ -115,8 +115,6 @@ export module wsl.core;
 #include "das/wsl_event_binds.hpp"
 #endif
 #include "debug/debug_renderer.hpp"
-#include "editor/editor_ui_layer_interface.hpp"
-#include "editor_app.hpp"
 #include "event.hpp"
 #include "event/event_hub.hpp"
 #include "event/event_hub_fwd.hpp"
@@ -128,7 +126,6 @@ export module wsl.core;
 #include "gfx/cubemap.hpp"
 #include "gfx/gpu_resources.hpp"
 #include "gfx/image.hpp"
-#include "gfx/imgui_renderer_interface.hpp"
 #include "gfx/lighting.hpp"
 #include "gfx/material.hpp"
 #include "gfx/material_asset.hpp"

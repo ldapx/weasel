@@ -6,102 +6,20 @@
 #include "camera_2d.hpp"
 #include "hierarchy.hpp"
 #include "singl/runtime_context.hpp"
-#include "singl/editor_context.hpp"
 
 #include <entt/meta/factory.hpp>
-#include <imgui.h>
 
 namespace wsl::comp
 {
-
-bool
-subviewport_camera_ui::custom_inspect (
-    const char * /*label*/, comp::singl::runtime_context *runtime_ctx)
-{
-  if (runtime_ctx == nullptr || runtime_ctx->editor_ctx () == nullptr) {
-    return false;
-  }
-
-  bool changed = false;
-  rsc::scene *scene = runtime_ctx->scene_manager ().get_active ();
-  if (scene == nullptr) {
-    return false;
-  }
-
-  entt::registry &registry = scene->get_registry ();
-
-  // The entity currently being inspected in the editor
-  entt::entity self = runtime_ctx->editor_ctx ()->selected_entity ();
-  if (self == entt::null || !registry.all_of<subviewport> (self)) {
-    self = entt::null;
-  }
-
-  const char *preview = "None";
-  if (value != entt::null && registry.valid (value)) {
-    preview = scene->get_entity_name (value).c_str ();
-  }
-
-  if (ImGui::BeginCombo ("##camera_combo", preview)) {
-    if (ImGui::Selectable ("None", value == entt::null)) {
-      value = entt::null;
-      changed = true;
-    }
-
-    if (self != entt::null) {
-      // Collect descendants that match the camera type filter
-      std::vector<entt::entity> stack;
-      auto h_view = registry.view<hierarchy> ();
-      for (auto const e : h_view) {
-        if (h_view.get<hierarchy> (e).parent == self) {
-          stack.push_back (e);
-        }
-      }
-
-      while (!stack.empty ()) {
-        entt::entity const e = stack.back ();
-        stack.pop_back ();
-
-        bool matches_filter = false;
-        if (filter_2d) {
-          matches_filter = registry.all_of<comp::camera_2d> (e);
-        } else {
-          matches_filter = registry.all_of<comp::camera> (e);
-        }
-
-        if (matches_filter) {
-          const std::string &name = scene->get_entity_name (e);
-          bool const selected = (e == value);
-          if (ImGui::Selectable (name.c_str (), selected)) {
-            value = e;
-            changed = true;
-          }
-          if (selected) {
-            ImGui::SetItemDefaultFocus ();
-          }
-        }
-
-        // push children
-        for (auto const child : h_view) {
-          if (h_view.get<hierarchy> (child).parent == e) {
-            stack.push_back (child);
-          }
-        }
-      }
-    }
-    ImGui::EndCombo ();
-  }
-
-  return changed;
-}
 
 void
 subviewport_camera_ui::register_meta ()
 {
   using namespace entt::literals;
 
+  // The ImGui inspector (custom_inspect) is registered by editor_support.
   entt::meta_factory<comp::subviewport_camera_ui> ()
       .type (entt::type_hash<comp::subviewport_camera_ui>::value ())
-      .func<&comp::subviewport_camera_ui::custom_inspect> ("custom_inspect"_hs)
       .data<&comp::subviewport_camera_ui::value> ("value"_hs)
       .custom<comp::meta_info> (
           meta_info{ "Camera", "Camera entity for this viewport.", "" });

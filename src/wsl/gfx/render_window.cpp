@@ -1006,7 +1006,10 @@ render_window::postprocess_hdr_bloom ()
 
   // ---------- (4) Composite + tonemap: m_hdr_scene + m_bloom_a -> m_swapchain
   // ----------
-  if (m_swapchain.texture_data != nullptr) {
+  // Skipped when the app renders the scene itself (editor front-ends that
+  // blit present_tex into their UI): the swapchain then only carries the UI,
+  // and the scene does not get composited (and cleared) twice per frame.
+  if (m_present_to_swapchain && (m_swapchain.texture_data != nullptr)) {
     ZoneScopedN ("postprocess::composite_swapchain");
 #ifdef WEASEL_ENABLE_RENDERDOC
     wsl::gfx::rdoc::annotate_command (

@@ -23,7 +23,7 @@ Asset loading, serialization, scene lifecycle, and project management. The resou
 | Scene | `scene_id` | `scene_loader` | Serialized entity snapshots. Produces `rsc::scene`. |
 | Shader | `shader_id` | `shader_loader` | SDL GPU shaders. Produces `gfx::shader_module`. |
 | Audio | `audio_id` | — | Audio clips via SDL_mixer. |
-| UI Layout | `ui_layout_id` | — | ImGui layout definitions. |
+| UI Layout | `ui_layout_id` | — | RmlUi layout definitions (`.rml`). |
 | Font | `font_id` | — | Font file paths for text rendering. |
 
 ## Usage

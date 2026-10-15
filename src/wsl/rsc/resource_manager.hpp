@@ -396,8 +396,8 @@ struct shader_program_record
 /** Internal record tracking the state and data of a skeleton resource. */
 struct skeleton_record
 {
-  std::string path;         // Path to the .skel.ozz file.
-  std::string name;         // Human-readable name.
+  std::string path; // Path to the .skel.ozz file.
+  std::string name; // Human-readable name.
   skeleton_state state = skeleton_state::not_loaded; // Loading state.
   /** Loaded runtime skeleton; owns its ozz-allocated memory. */
   ozz::unique_ptr<ozz::animation::Skeleton> skeleton{};
@@ -406,8 +406,8 @@ struct skeleton_record
 /** Internal record tracking the state and data of an animation resource. */
 struct animation_record
 {
-  std::string path;          // Path to the .anim.ozz file.
-  std::string name;          // Human-readable name.
+  std::string path; // Path to the .anim.ozz file.
+  std::string name; // Human-readable name.
   animation_state state = animation_state::not_loaded; // Loading state.
   /** Loaded runtime animation clip; owns its ozz-allocated memory. */
   ozz::unique_ptr<ozz::animation::Animation> animation{};
@@ -463,7 +463,8 @@ public:
    * :param request_load: If true, start asynchronous loading immediately.
    * :return: The assigned model id.
    */
-  [[nodiscard]] model_id import_model (const std::string &path, bool request_load = true);
+  [[nodiscard]] model_id import_model (const std::string &path,
+                                       bool request_load = true);
 
   /**
    * Load a model resource handle (may start loading if not ready).
@@ -498,7 +499,8 @@ public:
   [[nodiscard]] bool contains (model_id id) const;
 
   /** Find a registered model id by the original path if present. */
-  [[nodiscard]] std::optional<model_id> find_model_by_path (const std::string &path) const;
+  [[nodiscard]] std::optional<model_id>
+  find_model_by_path (const std::string &path) const;
 
   /** Retrieve metadata about a registered model id. */
   [[nodiscard]] std::optional<model_resource_info> info (model_id id) const;
@@ -535,7 +537,8 @@ public:
    * :param path: Path to the image file.
    * :param request_load: If true, start loading immediately.
    */
-  [[nodiscard]] image_id import_image (const std::string &path, bool request_load = true);
+  [[nodiscard]] image_id import_image (const std::string &path,
+                                       bool request_load = true);
 
   /** Load an image handle for use by the renderer. */
   [[nodiscard]] image_handle load (image_id id);
@@ -562,7 +565,8 @@ public:
   [[nodiscard]] cubemap_id register_cubemap (const std::string &path);
 
   /** Import a cubemap and optionally request loading. */
-  [[nodiscard]] cubemap_id import_cubemap (const std::string &path, bool request_load = true);
+  [[nodiscard]] cubemap_id import_cubemap (const std::string &path,
+                                           bool request_load = true);
 
   /** Load a cubemap handle for rendering. */
   [[nodiscard]] cubemap_handle load (cubemap_id id);
@@ -593,7 +597,8 @@ public:
    * :param path: Filesystem path to the scene or prefab.
    * :param request_load: Start asynchronous load if true.
    */
-  [[nodiscard]] scene_id import_scene (const std::string &path, bool request_load = true);
+  [[nodiscard]] scene_id import_scene (const std::string &path,
+                                       bool request_load = true);
 
   /** Load a scene resource handle. */
   [[nodiscard]] scene_handle load (scene_id id);
@@ -620,8 +625,8 @@ public:
   /** Instantiate a prefab scene under the optional parent entity.
    *  :return: The root entity of the first instantiated copy, or entt::null on
    * failure. */
-  [[nodiscard]] entt::entity instantiate_prefab (scene_id id,
-                                   entt::entity parent = entt::null);
+  [[nodiscard]] entt::entity
+  instantiate_prefab (scene_id id, entt::entity parent = entt::null);
 
   /** Query the loading state of a scene id. */
   [[nodiscard]] scene_state state (scene_id id) const;
@@ -650,7 +655,8 @@ public:
   [[nodiscard]] audio_id register_audio (const std::string &path);
 
   /** Import audio and optionally request loading. */
-  [[nodiscard]] audio_id import_audio (const std::string &path, bool request_load = true);
+  [[nodiscard]] audio_id import_audio (const std::string &path,
+                                       bool request_load = true);
 
   /**
    * Load audio and return a raw MIX_Audio pointer owned by the mixer.
@@ -680,7 +686,8 @@ public:
   [[nodiscard]] ui_layout_id register_ui_layout (const std::string &path);
 
   /** Get metadata for a UI layout id. */
-  [[nodiscard]] std::optional<ui_layout_resource_info> info (ui_layout_id id) const;
+  [[nodiscard]] std::optional<ui_layout_resource_info>
+  info (ui_layout_id id) const;
 
   /** List all registered UI layouts. */
   [[nodiscard]] std::vector<ui_layout_resource_info> list_ui_layouts () const;
@@ -724,7 +731,7 @@ public:
 
   /** Import a material asset and optionally request loading. */
   [[nodiscard]] material_id import_material (const std::string &path,
-                               bool request_load = true);
+                                             bool request_load = true);
 
   /** Load a material handle for the given id. */
   [[nodiscard]] material_handle load (material_id id);
@@ -742,14 +749,16 @@ public:
   [[nodiscard]] bool contains (material_id id) const;
 
   /** Get metadata for a material id. */
-  [[nodiscard]] std::optional<material_resource_info> info (material_id id) const;
+  [[nodiscard]] std::optional<material_resource_info>
+  info (material_id id) const;
 
   /** List all registered materials. */
   [[nodiscard]] std::vector<material_resource_info> list_materials () const;
 
   // ---- Shader Programs ----
   /** Register a shader program (runtime generated or file path). */
-  [[nodiscard]] shader_program_id register_shader_program (const std::string &path);
+  [[nodiscard]] shader_program_id
+  register_shader_program (const std::string &path);
 
   /** Store a runtime-generated shader program. */
   [[nodiscard]] shader_program_id
@@ -766,10 +775,12 @@ public:
   [[nodiscard]] bool contains (shader_program_id id) const;
 
   /** Get metadata for a shader program id. */
-  [[nodiscard]] std::optional<shader_program_resource_info> info (shader_program_id id) const;
+  [[nodiscard]] std::optional<shader_program_resource_info>
+  info (shader_program_id id) const;
 
   /** List all registered shader programs. */
-  [[nodiscard]] std::vector<shader_program_resource_info> list_shader_programs () const;
+  [[nodiscard]] std::vector<shader_program_resource_info>
+  list_shader_programs () const;
 
   // ---- Skeletons (`.skel.ozz`) ----
   /** Register a skeleton asset path without loading. */
@@ -791,8 +802,8 @@ public:
   [[nodiscard]] bool contains (skeleton_id id) const;
 
   /** Get metadata for a skeleton id. */
-  [[nodiscard]] std::optional<skeleton_resource_info> info (
-      skeleton_id id) const;
+  [[nodiscard]] std::optional<skeleton_resource_info>
+  info (skeleton_id id) const;
 
   /** List all registered skeletons. */
   [[nodiscard]] std::vector<skeleton_resource_info> list_skeletons () const;
@@ -817,8 +828,8 @@ public:
   [[nodiscard]] bool contains (animation_id id) const;
 
   /** Get metadata for an animation id. */
-  [[nodiscard]] std::optional<animation_resource_info> info (
-      animation_id id) const;
+  [[nodiscard]] std::optional<animation_resource_info>
+  info (animation_id id) const;
 
   /** List all registered animation clips. */
   [[nodiscard]] std::vector<animation_resource_info> list_animations () const;
@@ -989,7 +1000,9 @@ struct resource_manager_view : comp::singleton_component
   static void register_meta ();
 
   /**
-   * Draw a compact ImGui inspector for the resource manager.
+   * ImGui inspector for the resource manager; implemented in editor_support
+   * (inspectors_resources.cpp) and registered by
+   * editor::register_editor_inspectors().
    * :param label: Optional UI label.
    * :param runtime_ctx: Runtime context used to resolve runtime resources.
    * :return: True if interactive UI was drawn.

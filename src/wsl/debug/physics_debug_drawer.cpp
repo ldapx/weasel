@@ -3,7 +3,9 @@
 #include "wsl/gfx/scene_renderer.hpp"
 #include "wsl/phys/physics_engine.hpp"
 
-namespace editor
+namespace wsl
+{
+namespace debug
 {
 
 namespace
@@ -66,4 +68,5 @@ draw_physics_debug (wsl::phys::engine &engine,
   }
 }
 
-} // namespace editor
+} // namespace debug
+} // namespace wsl

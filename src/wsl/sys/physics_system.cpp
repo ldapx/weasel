@@ -24,11 +24,9 @@
 #include <glm/matrix.hpp>
 #include <string>
 
-#include "../../editor/physics_debug_drawer.hpp"
+#include "../debug/physics_debug_drawer.hpp"
 #include "../comp/singl/editor_context.hpp"
 #include "../debug/debug_renderer.hpp"
-
-
 
 #include <glm/gtc/quaternion.hpp>
 
@@ -307,7 +305,7 @@ physics_system::on_render_build_draw_data (entt::registry &registry)
   // physics_manager is rebuilt every frame, so creating an engine here would
   // churn (see on_editor_update).
   if (phys::engine *engine = physics->try_engine (); engine != nullptr) {
-    editor::draw_physics_debug (*engine, *debug_renderer);
+    debug::draw_physics_debug (*engine, *debug_renderer);
   }
 }
 
@@ -368,7 +366,8 @@ physics_system::update_character_controllers (entt::registry &registry,
 
   const float step = static_cast<float> (dt);
 
-  // Character body update is deferred until Box3D provides a character controller.
+  // Character body update is deferred until Box3D provides a character
+  // controller.
   (void)step;
   (void)engine;
 }
@@ -625,8 +624,8 @@ physics_system::recreate_all_bodies (entt::registry &registry)
       comp::character_body &c = view.get<comp::character_body> (e);
       if (!c.valid ()) {
         if (auto *wt = registry.try_get<comp::world_transform> (e); wt) {
-          c.recreate (engine, glm::vec3 (
-                                  static_cast<glm::mat4> (wt->value ())[3]));
+          c.recreate (engine,
+                      glm::vec3 (static_cast<glm::mat4> (wt->value ())[3]));
         } else if (auto *t = registry.try_get<comp::transform> (e); t) {
           c.recreate (engine, (glm::vec3)t->position);
         }
@@ -658,11 +657,12 @@ physics_system::sync_rigid_bodies_to_transforms (entt::registry &registry,
     // The physics body sits at transform_world + offset.  Remove the offset
     // so that set_local_from_world sees the transform's own world position.
     const phys::vector3 body_position = engine.get_body_position (rb.body_id);
-    const phys::quaternion body_rotation = engine.get_body_rotation (rb.body_id);
+    const phys::quaternion body_rotation
+        = engine.get_body_rotation (rb.body_id);
     glm::vec3 const body_world (body_position.x, body_position.y,
                                 body_position.z);
-    glm::quat const body_rot (body_rotation.w, body_rotation.x,
-                              body_rotation.y, body_rotation.z);
+    glm::quat const body_rot (body_rotation.w, body_rotation.x, body_rotation.y,
+                              body_rotation.z);
     glm::quat const inv_offset = glm::inverse ((glm::quat)rb.rotation);
     glm::quat const xform_rot = body_rot * inv_offset;
     glm::vec3 const xform_pos = body_world - xform_rot * (glm::vec3)rb.position;
@@ -692,8 +692,7 @@ physics_system::sync_characters_to_transforms (entt::registry &registry,
 
     phys::vector3 const pos = engine.get_body_position (c.get_id ());
     phys::quaternion const rot = engine.get_body_rotation (c.get_id ());
-    set_local_from_world (registry, e,
-                          glm::vec3 (pos.x, pos.y, pos.z),
+    set_local_from_world (registry, e, glm::vec3 (pos.x, pos.y, pos.z),
                           glm::quat (rot.w, rot.x, rot.y, rot.z));
   }
 }

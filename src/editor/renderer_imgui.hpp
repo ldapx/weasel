@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-#include "wsl/gfx/imgui_renderer_interface.hpp"
+#include "editor_support/imgui_renderer_interface.hpp"
 #include "wsl/gfx/render_window.hpp"
 #include "wsl/gfx/render_context.hpp"
 #include "wsl/gfx/view_gizmo.hpp"

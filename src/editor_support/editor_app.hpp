@@ -3,8 +3,8 @@
 #include "wsl/app.hpp"
 #include "wsl/comp/singl/editor_context.hpp"
 #include "wsl/debug/debug_renderer.hpp"
-#include "wsl/editor/editor_ui_layer_interface.hpp"
-#include "wsl/gfx/imgui_renderer_interface.hpp"
+#include "editor_support/editor_ui_layer_interface.hpp"
+#include "editor_support/imgui_renderer_interface.hpp"
 
 namespace wsl
 {
