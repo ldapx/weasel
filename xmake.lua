@@ -1219,6 +1219,8 @@ target("weasel-rmlui")
     -- Backends include dir (RmlUi_Platform_SDL.h / RmlUi_Renderer_SDL_GPU.h).
     add_packages("rmlui")
     add_packages("cli11")
+    -- Agent tab (ACP chat) needs the agent SDK, like chat_panel in weasel.
+    add_packages("agentsdk")
     if has_config("with_slang") then add_packages("slang") end
     add_defines("CPP_RTTI_ENABLED")
     add_defines("WEASEL_SOURCE_DIR=\"" .. projectdir_fwd .. "\"", "WEASEL_BUILD_DIR=\"" .. projectdir_fwd .. "/build\"", "TRACY_ENABLE")

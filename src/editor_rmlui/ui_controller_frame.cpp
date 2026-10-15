@@ -1,5 +1,6 @@
 #include "ui_controller.hpp"
 
+#include "ui_agent.hpp"
 #include "ui_util.hpp"
 #include "ui_view.hpp"
 
@@ -505,6 +506,9 @@ ui_controller::update_frame (double dt)
   update_camera (dt);
   process_dialog_result ();
   model_.poll_build_job ();
+  if (model_.agent && model_.agent->poll ()) {
+    model_.dirty = true;
+  }
 
   // Keep RmlUi's hover state tied to the real pointer position every frame.
   // Hovering then never depends on motion-event delivery (or on events being
@@ -561,5 +565,39 @@ ui_controller::create_project_from_form ()
     folder = "./";
   }
   model_.create_project (name, folder);
+}
+
+void
+ui_controller::ensure_agent ()
+{
+  if (!model_.agent) {
+    model_.agent = std::make_unique<agent_session> ();
+  }
+}
+
+void
+ui_controller::agent_send_from_input ()
+{
+  if (document_ == nullptr) {
+    return;
+  }
+  auto *control = rmlui_dynamic_cast<Rml::ElementFormControl *> (
+      document_->GetElementById ("agent-input"));
+  if (control == nullptr) {
+    return;
+  }
+  const std::string text = control->GetValue ();
+  if (text.empty ()) {
+    return;
+  }
+  ensure_agent ();
+  if (!model_.agent->connected ()) {
+    model_.append_console ("Agent is not connected.");
+    model_.dirty = true;
+    return;
+  }
+  control->SetValue ("");
+  model_.agent->send (text);
+  model_.dirty = true;
 }
 } // namespace editor_rml

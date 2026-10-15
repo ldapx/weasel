@@ -8,6 +8,7 @@
 #include "editor_ui.hpp"
 
 #include "log_sink.hpp"
+#include "ui_agent.hpp"
 #include "ui_controller.hpp"
 #include "ui_model.hpp"
 #include "ui_util.hpp"

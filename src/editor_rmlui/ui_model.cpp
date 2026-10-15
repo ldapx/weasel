@@ -1,5 +1,6 @@
 #include "ui_model.hpp"
 
+#include "ui_agent.hpp"
 #include "ui_util.hpp"
 
 #include <SDL3/SDL_dialog.h>
@@ -32,6 +33,11 @@
 
 namespace editor_rml
 {
+
+ui_model::ui_model (editor_ui::services in_services)
+    : svc (std::move (in_services))
+{
+}
 
 std::vector<entt::entity>
 ui_model::hierarchy_children (entt::registry &reg, entt::entity parent)

@@ -26,12 +26,11 @@
 namespace editor_rml
 {
 
+class agent_session;
+
 struct ui_model
 {
-  explicit ui_model (editor_ui::services in_services)
-      : svc (std::move (in_services))
-  {
-  }
+  explicit ui_model (editor_ui::services in_services);
 
   editor_ui::services svc;
 
@@ -47,12 +46,13 @@ struct ui_model
   bool show_inspector = true;
   bool show_console = true;
   bool show_log = true;
+  bool show_agent = true;
   std::string open_menu_id;
 
   // Tab selections per panel group.
   int left_tab = 0;   // 0 = entities, 1 = systems, 2 = files
   int right_tab = 0;  // 0 = inspector, 1 = build
-  int bottom_tab = 0; // 0 = console, 1 = log
+  int bottom_tab = 0; // 0 = console, 1 = log, 2 = agent
 
   // Panel layout, in percent of the window; adjustable via drag handles.
   float left_pct = 22.0F;
@@ -128,6 +128,12 @@ struct ui_model
   int build_target_idx = -1;
   int build_test_idx = -1;
   std::shared_ptr<build_job_state> build_job;
+
+  // Collapsed agent tool-call cards, keyed by "message.tool" index pair.
+  std::unordered_set<std::string> agent_collapsed_tools;
+
+  /** Live ACP agent session backing the Agent tab (null until used). */
+  std::unique_ptr<agent_session> agent;
 
   /** Live lookup target for one inspector commit. */
   struct inspector_target

@@ -52,6 +52,7 @@ ui_view::refresh ()
   refresh_inspector ();
   refresh_log ();
   refresh_console ();
+  refresh_agent ();
   refresh_toolbar ();
   refresh_panels ();
   refresh_welcome ();
@@ -166,22 +167,29 @@ ui_view::refresh_panels ()
     set_hidden ("right-build", model_.right_tab != 1);
   }
 
-  // Bottom group: Console | Log tabs.
-  const bool bottom_hidden = !model_.show_console && !model_.show_log;
+  // Bottom group: Console | Log | Agent tabs.
+  const bool bottom_hidden
+      = !model_.show_console && !model_.show_log && !model_.show_agent;
   set_hidden ("bottom", bottom_hidden);
   if (!bottom_hidden) {
-    if (!model_.show_console) {
+    if (!model_.show_console && model_.bottom_tab == 0) {
       model_.bottom_tab = 1;
     }
-    if (!model_.show_log) {
+    if (!model_.show_log && model_.bottom_tab == 1) {
+      model_.bottom_tab = 2;
+    }
+    if (!model_.show_agent && model_.bottom_tab == 2) {
       model_.bottom_tab = 0;
     }
     set_hidden ("tabbtn-console", !model_.show_console);
     set_hidden ("tabbtn-log", !model_.show_log);
+    set_hidden ("tabbtn-agent", !model_.show_agent);
     set_active ("tabbtn-console", model_.bottom_tab == 0);
     set_active ("tabbtn-log", model_.bottom_tab == 1);
+    set_active ("tabbtn-agent", model_.bottom_tab == 2);
     set_hidden ("bottom-console", model_.bottom_tab != 0);
     set_hidden ("bottom-log", model_.bottom_tab != 1);
+    set_hidden ("bottom-agent", model_.bottom_tab != 2);
   }
 
   apply_layout ();
@@ -220,7 +228,8 @@ ui_view::apply_layout ()
 
   static constexpr int kStatusBarHeight = 22;
 
-  const bool bottom_hidden = !model_.show_console && !model_.show_log;
+  const bool bottom_hidden
+      = !model_.show_console && !model_.show_log && !model_.show_agent;
   const bool left_visible = model_.show_entities || model_.show_systems;
   const float left = left_visible ? model_.left_pct : 0.0F;
   const float right = model_.show_inspector ? model_.right_pct : 0.0F;
@@ -274,8 +283,9 @@ ui_view::log_tab_diagnostics ()
     return;
   }
 
-  for (const char *id : { "tabbtn-entities", "tabbtn-systems", "tabbtn-console",
-                          "tabbtn-log", "tabbtn-inspector" }) {
+  for (const char *id :
+       { "tabbtn-entities", "tabbtn-systems", "tabbtn-files", "tabbtn-console",
+         "tabbtn-log", "tabbtn-agent", "tabbtn-inspector", "tabbtn-build" }) {
     Rml::Element *el = document_->GetElementById (id);
     if (el == nullptr) {
       wsl::log::editor ()->info ("editor tab {}: missing", id);
@@ -311,10 +321,28 @@ ui_view::log_tab_diagnostics ()
   wsl::log::editor ()->info ("editor rml source: {}",
                              editor_document_root (model_.svc));
 
+  for (const char *id : { "bottom-agent", "agent-toolbar", "agent-messages",
+                          "agent-inputrow", "left-files", "right-build" }) {
+    Rml::Element *el = document_->GetElementById (id);
+    if (el == nullptr) {
+      wsl::log::editor ()->info ("editor region {}: missing", id);
+      continue;
+    }
+    const Rml::Vector2f off = el->GetAbsoluteOffset (Rml::BoxArea::Border);
+    const Rml::Vector2f size = el->GetBox ().GetSize (Rml::BoxArea::Border);
+    wsl::log::editor ()->info (
+        "editor region {}: pos=({:.1f},{:.1f}) size={:.1f}x{:.1f} display={} "
+        "visible={}",
+        id, off.x, off.y, size.x, size.y,
+        static_cast<int> (el->GetComputedValues ().display ()),
+        static_cast<int> (el->IsVisible (true)));
+  }
+
   // Overlay state. A "shown" overlay whose background fails to parse is
   // invisible yet swallows every mouse hit over the editor (rgba() alpha is
   // an integer 0-255 in RmlUi); log the effective state so this is visible.
-  for (const char *id : { "welcome", "modal-new-project" }) {
+  for (const char *id :
+       { "welcome", "modal-new-project", "modal-agent-permission" }) {
     if (Rml::Element *el = document_->GetElementById (id); el != nullptr) {
       const Rml::Colourb bg = el->GetComputedValues ().background_color ();
       wsl::log::editor ()->info (

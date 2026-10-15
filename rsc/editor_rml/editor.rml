@@ -31,6 +31,7 @@
 				<div id="mi-toggle-inspector" class="menuitem">Inspector</div>
 				<div id="mi-toggle-console" class="menuitem">Console</div>
 				<div id="mi-toggle-log" class="menuitem">Log</div>
+				<div id="mi-toggle-agent" class="menuitem">Agent</div>
 				<div class="menusep"></div>
 				<div id="mi-toggle-welcome" class="menuitem">Welcome</div>
 			</div>
@@ -100,11 +101,12 @@
 	</div>
 	<div id="gameview"></div>
 
-	<!-- ==================== bottom: console / log tabs ==================== -->
+	<!-- ==================== bottom: console / log / agent tabs ==================== -->
 	<div id="bottom" class="panel">
 		<div class="tabbar">
 			<div id="tabbtn-console" class="tab active">Console</div>
 			<div id="tabbtn-log" class="tab">Log</div>
+			<div id="tabbtn-agent" class="tab">Agent</div>
 		</div>
 		<div id="bottom-console" class="tabpage">
 			<div id="console-output" class="scroll mono"></div>
@@ -138,6 +140,16 @@
 				</select>
 			</div>
 			<div id="log-output" class="scroll mono"></div>
+		</div>
+		<div id="bottom-agent" class="tabpage hidden">
+			<div id="agent-toolbar" class="scroll"></div>
+			<div id="agent-messages" class="scroll"></div>
+			<div id="agent-inputrow">
+				<div id="agent-input-wrap">
+					<input id="agent-input" type="text" placeholder="Ask the agent..."/>
+				</div>
+				<button id="btn-agent-send">Send</button>
+			</div>
 		</div>
 	</div>
 
@@ -182,6 +194,22 @@
 			<div class="form-row form-actions">
 				<button id="np-create" class="btn--primary">Create</button>
 				<button id="np-cancel" class="btn--secondary">Cancel</button>
+			</div>
+		</div>
+	</div>
+	<!-- ======================= agent permission modal ======================= -->
+	<div id="modal-agent-permission">
+		<div id="perm-card">
+			<div class="form-title">Permission Required</div>
+			<div class="form-row">
+				<span class="form-label">Agent requests permission:</span>
+			</div>
+			<div id="perm-title" class="scroll"></div>
+			<div class="form-row form-actions">
+				<button id="perm-allow-once" class="btn--primary">Allow Once</button>
+				<button id="perm-allow-always">Allow Always</button>
+				<button id="perm-reject-once">Reject Once</button>
+				<button id="perm-reject" class="btn--error">Reject</button>
 			</div>
 		</div>
 	</div>

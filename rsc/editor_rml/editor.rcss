@@ -1266,3 +1266,287 @@ input:focus
 {
 	color: #e06c60;
 }
+
+/* ============================================================== agent tab */
+
+#agent-toolbar
+{
+	position: absolute;
+	left: 6px;
+	right: 6px;
+	top: 4px;
+	height: 30px;
+	display: block;
+	margin: 0px;
+	padding: 2px 0px;
+	overflow: auto;
+}
+
+#agent-toolbar .dim
+{
+	margin-right: 4px;
+}
+
+#agent-toolbar button
+{
+	margin-right: 4px;
+	padding: 2px 8px;
+	vertical-align: middle;
+}
+
+#agent-toolbar select
+{
+	margin-right: 8px;
+	vertical-align: middle;
+}
+
+#agent-status
+{
+	display: inline-block;
+	margin: 0px 8px 0px 4px;
+	padding: 0px;
+	font-size: 12px;
+	vertical-align: middle;
+}
+
+.ag-ok
+{
+	color: #8fa34f;
+}
+
+.ag-busy
+{
+	color: #dec16b;
+}
+
+.ag-off
+{
+	color: #6b655a;
+}
+
+#agent-messages
+{
+	position: absolute;
+	left: 6px;
+	right: 6px;
+	top: 38px;
+	bottom: 36px;
+	display: block;
+	margin: 0px;
+	background-color: #06070ad9;
+	border-width: 1px;
+	border-color: #23252f;
+	border-radius: 4px;
+	padding: 4px 6px;
+}
+
+#agent-inputrow
+{
+	position: absolute;
+	left: 6px;
+	right: 6px;
+	bottom: 6px;
+	height: 26px;
+	display: block;
+	margin: 0px;
+	padding: 0px;
+}
+
+#agent-input-wrap
+{
+	position: absolute;
+	left: 0px;
+	right: 80px;
+	top: 0px;
+	bottom: 0px;
+	display: block;
+	margin: 0px;
+	padding: 0px;
+}
+
+#agent-input
+{
+	display: block;
+	width: 100%;
+	height: 100%;
+	box-sizing: border-box;
+}
+
+#btn-agent-send
+{
+	position: absolute;
+	right: 0px;
+	top: 0px;
+	width: 74px;
+}
+
+.amsg
+{
+	display: block;
+	margin: 0px 0px 8px 0px;
+	padding: 0px 0px 6px 0px;
+	border-bottom-width: 1px;
+	border-bottom-color: #23252f;
+}
+
+.arole
+{
+	display: block;
+	margin: 0px 0px 2px 0px;
+	font-weight: bold;
+	font-size: 12px;
+}
+
+.role-user
+{
+	color: #66b3ff;
+}
+
+.role-assistant
+{
+	color: #99e699;
+}
+
+.role-system
+{
+	color: #cccc66;
+}
+
+.abody
+{
+	display: block;
+	margin: 0px 0px 0px 12px;
+	padding: 0px;
+}
+
+.tout
+{
+	display: block;
+	margin: 4px 0px 4px 12px;
+	padding: 4px 6px;
+	background-color: #101218;
+	border-width: 1px;
+	border-color: #2f3242;
+	border-radius: 4px;
+	font-family: "Hack";
+	font-size: 12px;
+}
+
+.diff-del
+{
+	color: #e06c60;
+}
+
+.diff-add
+{
+	color: #a6e3a1;
+}
+
+.tc-pending
+{
+	color: #8f8a80;
+}
+
+.tc-running
+{
+	color: #dec16b;
+}
+
+.tc-completed
+{
+	color: #8fa34f;
+}
+
+.tc-failed
+{
+	color: #e06c60;
+}
+
+/* ================================================================ agent content */
+
+.tcontent
+{
+	display: block;
+	margin: 0px;
+	padding: 0px;
+}
+
+.plan-done
+{
+	color: #6b655a;
+}
+
+.plan-active
+{
+	color: #dec16b;
+}
+
+/* ================================================================ selects */
+
+select
+{
+	display: inline-block;
+	box-sizing: border-box;
+	margin: 0px;
+	padding: 1px 4px;
+	background-color: #101218;
+	border-width: 1px;
+	border-color: #2f3242;
+	border-radius: 4px;
+	color: #f2ebe9;
+	font-size: 12px;
+}
+
+/* =================================================== agent permission modal */
+
+#modal-agent-permission
+{
+	position: absolute;
+	left: 0px;
+	right: 0px;
+	top: 28px;
+	bottom: 22px;
+	display: none;
+	margin: 0px;
+	background-color: #0000008c;
+	z-index: 30;
+}
+
+#modal-agent-permission.shown
+{
+	display: block;
+}
+
+#perm-card
+{
+	position: absolute;
+	left: 32%;
+	right: 32%;
+	top: 30%;
+	display: block;
+	margin: 0px;
+	background-color: rgb(14, 15, 20);
+	border-width: 1px;
+	border-color: #2f3242;
+	border-radius: 6px;
+	padding: 18px;
+}
+
+#perm-card button
+{
+	margin-right: 6px;
+	margin-bottom: 6px;
+}
+
+#perm-title
+{
+	display: block;
+	max-height: 120px;
+	margin: 0px 0px 8px 0px;
+	padding: 6px 8px;
+	background-color: #06070ad9;
+	border-width: 1px;
+	border-color: #23252f;
+	border-radius: 4px;
+	overflow: auto;
+}

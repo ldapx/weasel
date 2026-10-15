@@ -61,6 +61,9 @@ struct ui_view
   void refresh_files ();
   void refresh_build ();
 
+  // Agent tab.
+  void refresh_agent ();
+
   // Inspector.
   void append_comp_header (std::string &html, std::uint64_t key,
                            const std::string &display_name,
@@ -95,6 +98,9 @@ struct ui_view
   std::string systems_html_cache;
   std::string files_html_cache;
   std::string build_html_cache;
+  std::string agent_html_cache;
+  std::string agent_toolbar_cache;
+  std::string agent_perm_cache;
   std::string log_autoscroll_cache;
 
   // Resolved component icon sources (empty = none), keyed by type id.

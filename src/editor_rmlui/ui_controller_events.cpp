@@ -1,5 +1,6 @@
 #include "ui_controller.hpp"
 
+#include "ui_agent.hpp"
 #include "ui_view.hpp"
 
 #include <RmlUi/Core.h>
@@ -177,7 +178,8 @@ ui_controller::hit_test_handle (float x, float y)
   if (model_.show_inspector && hit ("handle-right", x, y)) {
     return 2;
   }
-  if ((model_.show_console || model_.show_log) && hit ("handle-bottom", x, y)) {
+  if ((model_.show_console || model_.show_log || model_.show_agent)
+      && hit ("handle-bottom", x, y)) {
     return 3;
   }
   return 0;
@@ -314,6 +316,42 @@ ui_controller::wire_events ()
         model_.dirty = true;
       },
       true);
+
+  listen ("agent-input", "keydown", [this] (Rml::Event &event) {
+    const int key = event.GetParameter<int> ("key_identifier", -1);
+    if (key != static_cast<int> (Rml::Input::KI_RETURN)) {
+      return;
+    }
+    agent_send_from_input ();
+  });
+
+  // Agent toolbar selects (agent picker + session config options). Attached
+  // in the capture phase; the toolbar element itself persists across
+  // inner-RML rebuilds.
+  listen (
+      "agent-toolbar", "change",
+      [this] (Rml::Event &event) {
+        Rml::Element *target = event.GetTargetElement ();
+        if (target == nullptr) {
+          return;
+        }
+        const std::string id = target->GetId ();
+        auto *control = rmlui_dynamic_cast<Rml::ElementFormControl *> (target);
+        if (control == nullptr) {
+          return;
+        }
+        ensure_agent ();
+        if (id == "agent-select") {
+          model_.agent->selected_agent (control->GetValue ());
+        } else if (id.rfind ("agent-cfg-", 0) == 0) {
+          model_.agent->set_config_option (id.substr (10),
+                                           control->GetValue ());
+        } else {
+          return;
+        }
+        model_.dirty = true;
+      },
+      true);
 }
 
 void
@@ -369,6 +407,11 @@ ui_controller::dispatch_click (const std::string &id)
     model_.dirty = true;
     return;
   }
+  if (id == "tabbtn-agent") {
+    model_.bottom_tab = 2;
+    model_.dirty = true;
+    return;
+  }
 
   // -- lists ------------------------------------------------------
   if (id.rfind ("cmp-", 0) == 0) {
@@ -392,6 +435,65 @@ ui_controller::dispatch_click (const std::string &id)
       const auto field
           = static_cast<entt::id_type> (std::strtoull (sep + 1, nullptr, 10));
       model_.toggle_inspector_bool (comp, field);
+    }
+    return;
+  }
+  if (id.rfind ("tool-", 0) == 0) {
+    // tool-m<message>-c<call>
+    const char *rest = id.c_str () + 5;
+    if (*rest == 'm') {
+      char *sep = nullptr;
+      const long mi = std::strtol (rest + 1, &sep, 10);
+      if (sep != nullptr && sep[0] == '-' && sep[1] == 'c') {
+        const long ti = std::strtol (sep + 2, nullptr, 10);
+        const std::string key
+            = "m" + std::to_string (mi) + "-c" + std::to_string (ti);
+        if (model_.agent_collapsed_tools.contains (key)) {
+          model_.agent_collapsed_tools.erase (key);
+        } else {
+          model_.agent_collapsed_tools.insert (key);
+        }
+        model_.dirty = true;
+      }
+    }
+    return;
+  }
+  if (id == "btn-agent-connect") {
+    ensure_agent ();
+    if (model_.agent) {
+      std::string root;
+      if (auto project
+          = model_.svc.runtime->resource_manager ().current_project ()) {
+        root = project->root_path;
+      }
+      model_.agent->connect (root);
+      model_.dirty = true;
+    }
+    return;
+  }
+  if (id == "btn-agent-disconnect") {
+    if (model_.agent) {
+      model_.agent->disconnect ();
+      model_.dirty = true;
+    }
+    return;
+  }
+  if (id == "btn-agent-stop") {
+    if (model_.agent) {
+      model_.agent->cancel ();
+      model_.dirty = true;
+    }
+    return;
+  }
+  if (id == "btn-agent-send") {
+    agent_send_from_input ();
+    return;
+  }
+  if (id == "perm-allow-once" || id == "perm-allow-always"
+      || id == "perm-reject-once" || id == "perm-reject") {
+    if (model_.agent) {
+      model_.agent->dismiss_permission ();
+      model_.dirty = true;
     }
     return;
   }
@@ -601,6 +703,8 @@ ui_controller::handle_menu_action (const std::string &id)
     model_.show_console = !model_.show_console;
   } else if (id == "mi-toggle-log") {
     model_.show_log = !model_.show_log;
+  } else if (id == "mi-toggle-agent") {
+    model_.show_agent = !model_.show_agent;
   } else if (id == "mi-toggle-welcome") {
     model_.show_welcome = !model_.show_welcome;
   }

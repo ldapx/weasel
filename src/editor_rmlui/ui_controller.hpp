@@ -71,6 +71,12 @@ struct ui_controller
   /** Reads the new-project form and forwards it to the model. */
   void create_project_from_form ();
 
+  /** Lazily constructs the ACP agent session backing the Agent tab. */
+  void ensure_agent ();
+
+  /** Sends the Agent tab input row as a prompt. */
+  void agent_send_from_input ();
+
   /**
    * Applies a finished native dialog: project/scene/folder selection.
    * Owns the ``np-folder`` form write, so it needs the document.
