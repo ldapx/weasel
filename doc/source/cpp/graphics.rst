@@ -8,6 +8,8 @@ Rendering pipeline, shaders, materials, and scene management.
 .. cpp:autodoc:: wsl/gfx/render_context.hpp
 .. cpp:autodoc:: wsl/gfx/render_window.hpp
 .. cpp:autodoc:: wsl/gfx/viewport.hpp
+.. cpp:autodoc:: wsl/gfx/viewport_resolve.hpp
+.. cpp:autodoc:: wsl/gfx/ui_canvas.hpp
 .. cpp:autodoc:: wsl/gfx/clustered_lighting.hpp
 .. cpp:autodoc:: wsl/gfx/batch_renderer_2d.hpp
 .. cpp:autodoc:: wsl/gfx/pipeline_cache.hpp

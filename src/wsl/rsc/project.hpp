@@ -1,5 +1,7 @@
 #pragma once
 
+#include "window_settings.hpp"
+
 #ifndef IN_MODULE_INTERFACE
 #include <string>
 #endif
@@ -58,6 +60,13 @@ struct project
   std::string shaders_path;
   /** Path to the directory containing material files. */
   std::string materials_path = "rsc/materials";
+
+  // -------- Window & Quality (D7/D5) --------
+  /**
+   * Window configuration and global viewport quality defaults. Applies to
+   * standalone game builds only; editor host window settings are preserved.
+   */
+  window_settings window{};
 
   // -------- Default Scene --------
   /** Path to the default scene file, relative to `scenes_path`. */

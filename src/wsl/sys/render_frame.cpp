@@ -15,6 +15,7 @@
 
 #include <tracy/Tracy.hpp>
 #include "gfx/scene_renderer.hpp"
+#include <algorithm>
 #include <cstdint>
 #include <entt/entity/entity.hpp>
 #include <entt/entity/fwd.hpp>
@@ -37,12 +38,14 @@ sys::render_submission::reset ()
   draw_commands.clear ();
   palettes.clear ();
   environment = nullptr;
+  is_2d_view = false;
 }
 
 bool
 sys::build_render_frame (entt::registry &registry,
                          comp::singl::runtime_context &runtime_ctx,
-                         render_submission &out, entt::entity target_viewport)
+                         render_submission &out,
+                         const render_view_target &target)
 {
   ZoneScoped;
   out.reset ();
@@ -54,145 +57,122 @@ sys::build_render_frame (entt::registry &registry,
 
   auto &ctx = registry.ctx ();
 
-  entt::entity effective_camera = entt::null;
+  entt::entity const vp = target.viewport;
+  bool const is_2d_vp = target.mode == comp::subviewport_mode::mode_2d;
+  float const aspect = target.resolved.aspect_ratio ();
+  float const virt_w = target.resolved.virtual_size.x ();
+  float const virt_h = target.resolved.virtual_size.y ();
 
-  // Main viewport (target_viewport == entt::null) in editor mode uses the
-  // editor's camera selection. Subviewports always use their own camera
-  // fields so that offscreen rendering is independent of the toolbar.
-  if (runtime_ctx.editor_ctx () != nullptr && target_viewport == entt::null) {
-    auto &editor_ctx = *runtime_ctx.editor_ctx ();
+  entt::entity effective_camera = entt::null;
+  bool view_resolved = false;
+
+  auto *editor_ctx = runtime_ctx.editor_ctx ();
+  bool const paused_editor
+      = (editor_ctx != nullptr) && !runtime_ctx.is_running ();
+
+  // ---- Editor override (D9) ----
+  // While stopped, the editor-selected viewport + camera always win for the
+  // game view, including sub preview. Pressing play switches to the
+  // subviewport's own cameras (runtime selection).
+  bool editor_override = false;
+  if (editor_ctx != nullptr) {
+    if (vp == entt::null) {
+      editor_override = true;
+    } else if (paused_editor
+               && editor_ctx->game_view_selected_viewport () == vp) {
+      editor_override = true;
+    }
+  }
+
+  if (editor_override) {
     wsl::comp::singl::editor_context::resolved_camera resolved_camera;
-    if (!editor_ctx.resolve_game_view_camera (registry, scene,
-                                              resolved_camera)) {
+    if (editor_ctx->resolve_game_view_camera (registry, scene, resolved_camera)
+        && resolved_camera.valid ()) {
+      out.view.valid = true;
+      out.view.aspect_ratio = aspect;
+      out.view.world_position = resolved_camera.world_pos ();
+      out.view.view = resolved_camera.view ();
+      out.view.proj = resolved_camera.proj ();
+      out.view.view_proj = resolved_camera.vp ();
+      effective_camera = resolved_camera.entity ();
+      view_resolved = true;
+
+      if (paused_editor) {
+        auto mode = editor_ctx->resolve_game_view_mode (registry, scene);
+        out.is_2d_view = (mode
+                              == wsl::comp::singl::editor_context::
+                                  game_view_mode::mode_2d_edit
+                          || mode
+                                 == wsl::comp::singl::editor_context::
+                                     game_view_mode::mode_2d_view);
+      }
+    } else if (vp == entt::null) {
+      // Root viewport without a resolvable editor camera: nothing to draw.
       return false;
     }
+  }
 
-    out.view.valid = resolved_camera.valid ();
-    out.view.aspect_ratio = resolved_camera.aspect_ratio ();
-    out.view.world_position = resolved_camera.world_pos ();
-    out.view.view = resolved_camera.view ();
-    out.view.proj = resolved_camera.proj ();
-    out.view.view_proj = resolved_camera.vp ();
-
-    effective_camera = resolved_camera.entity ();
-
-    // Determine 2D mode from editor camera selection
-    if (!runtime_ctx.is_running ()) {
-      auto mode = editor_ctx.resolve_game_view_mode (registry, scene);
-      out.is_2d_view = (mode
-                            == wsl::comp::singl::editor_context::
-                                game_view_mode::mode_2d_edit
-                        || mode
-                               == wsl::comp::singl::editor_context::
-                                   game_view_mode::mode_2d_view);
-    }
-  } else {
-    // Determine the camera to use for this viewport
-    uint32_t w;
-    uint32_t h;
-    runtime_ctx.window ().get_size (w, h);
-    float aspect = (w > 0 && h > 0) ? (float)w / (float)h : 1.0F;
-
-    if (target_viewport != entt::null) {
-      if (auto *sv = registry.try_get<comp::subviewport> (target_viewport)) {
-        w = static_cast<uint32_t> (sv->virtual_size.x ());
-        h = static_cast<uint32_t> (sv->virtual_size.y ());
-
-        // For 3D subviewport quads, the camera aspect ratio must match
-        // world_quad_size so the offscreen texture fills the quad without
-        // distortion.  virtual_size is only the 2D coordinate space inside
-        // the subviewport and must not affect 3D scaling.
-        bool const is_3d_quad
-            = registry.all_of<comp::transform, comp::world_transform> (
-                target_viewport);
-        if (is_3d_quad && sv->world_quad_size.y () > 0.0F) {
-          aspect = sv->world_quad_size.x () / sv->world_quad_size.y ();
-        } else {
-          aspect = (h > 0) ? (float)w / (float)h : 1.0F;
-        }
+  // ---- Runtime camera (component-driven mode) ----
+  if (!view_resolved) {
+    if (vp == entt::null) {
+      effective_camera = scene->camera;
+    } else if (auto *sv = registry.try_get<comp::subviewport> (vp)) {
+      if (sv->camera.value != entt::null && registry.valid (sv->camera.value)) {
+        effective_camera = sv->camera.value;
       }
     }
 
-    // In editor mode, when the user has selected a specific camera (editor
-    // camera or a camera entity) for the preview, respect that choice even
-    // for subviewports.  Only fall back to the subviewport's internal camera
-    // when the editor is using "Default Runtime Camera" or when there is no
-    // editor context.
-    bool use_editor_camera = false;
-    if (runtime_ctx.editor_ctx () != nullptr && !runtime_ctx.is_running ()
-        && target_viewport != entt::null
-        && runtime_ctx.editor_ctx ()->game_view_selected_viewport ()
-               == target_viewport) {
-      auto &editor_ctx = *runtime_ctx.editor_ctx ();
-      wsl::comp::singl::editor_context::resolved_camera resolved_camera;
-      if (editor_ctx.resolve_game_view_camera (registry, scene,
-                                               resolved_camera)) {
-        if (resolved_camera.valid ()) {
-          use_editor_camera = true;
-          out.view.valid = true;
-          out.view.aspect_ratio = aspect;
-          out.view.world_position = resolved_camera.world_pos ();
-          out.view.view = resolved_camera.view ();
-          out.view.proj = resolved_camera.proj ();
-          out.view.view_proj = resolved_camera.vp ();
-          effective_camera = resolved_camera.entity ();
-
-          // Determine 2D mode from editor camera selection
-          auto mode = editor_ctx.resolve_game_view_mode (registry, scene);
-          out.is_2d_view = (mode
-                                == wsl::comp::singl::editor_context::
-                                    game_view_mode::mode_2d_edit
-                            || mode
-                                   == wsl::comp::singl::editor_context::
-                                       game_view_mode::mode_2d_view);
-        }
-      }
-    }
-
-    if (!use_editor_camera) {
-      if (target_viewport != entt::null) {
-        if (auto *sv = registry.try_get<comp::subviewport> (target_viewport)) {
-          if (sv->camera_3d.value != entt::null
-              && registry.valid (sv->camera_3d.value)) {
-            effective_camera = sv->camera_3d.value;
-          } else if (sv->camera_2d.value != entt::null
-                     && registry.valid (sv->camera_2d.value)) {
-            effective_camera = sv->camera_2d.value;
-          }
-        }
+    bool camera_usable = false;
+    if (effective_camera != entt::null) {
+      if (is_2d_vp) {
+        camera_usable = registry.all_of<comp::camera_2d, comp::transform_2d> (
+            effective_camera);
       } else {
-        effective_camera = scene->camera;
+        camera_usable = registry.all_of<comp::camera, comp::world_transform> (
+            effective_camera);
       }
     }
 
-    if (!use_editor_camera && effective_camera != entt::null
-        && (registry.all_of<comp::camera, comp::world_transform> (
-                effective_camera)
-            || registry.all_of<comp::camera_2d, comp::transform_2d> (
-                effective_camera))) {
+    if (camera_usable) {
+      if (is_2d_vp) {
+        const auto &cam2d = registry.get<comp::camera_2d> (effective_camera);
+        const auto &t2d = registry.get<comp::transform_2d> (effective_camera);
 
-      if (registry.all_of<comp::camera> (effective_camera)) {
+        out.view.valid = true;
+        out.view.aspect_ratio = aspect;
+        out.view.world_position
+            = glm::vec3 (t2d.position.x (), t2d.position.y (), 0);
+        // Top-left convention: the camera's `position` is the top-left of
+        // the visible area and `zoom` scales world units. `transform_2d`
+        // sprite positions are in virtual-canvas pixels with (0, 0) at the
+        // top-left, matching the 3D view.
+        glm::mat4 view_mat = glm::mat4 (1.0F);
+        view_mat
+            = glm::scale (view_mat, glm::vec3 (cam2d.zoom, cam2d.zoom, 1.0F));
+        view_mat = glm::translate (
+            view_mat, glm::vec3 (-t2d.position.x () * cam2d.zoom,
+                                 -t2d.position.y () * cam2d.zoom, 0.0F));
+        out.view.view = view_mat;
+        out.view.proj = glm::ortho (0.0F, virt_w, virt_h, 0.0F, -1.0F, 1.0F);
+        out.is_2d_view = true;
+      } else {
         const auto &cam = registry.get<comp::camera> (effective_camera);
         const comp::world_transform &wt
             = registry.get<comp::world_transform> (effective_camera);
         glm::mat4 const wtm = wt.value ();
 
         // When the camera lives inside a subviewport its world_transform
-        // inherits the parent subviewport's scale (world_quad_size).  Scale
-        // in the view matrix distorts the projection frustum and causes both
-        // the skybox and 3D models to be clipped.  We remove the scale by
-        // orthonormalising the 3x3 part while keeping the world position.
+        // inherits the parent subviewport's scale (world_quad_size). Scale in
+        // the view matrix distorts the projection frustum and causes both the
+        // skybox and 3D models to be clipped, so orthonormalise the 3x3 part
+        // while keeping the world position.
         bool const cam_is_inside_viewport
-            = (target_viewport != entt::null
+            = (vp != entt::null
                && comp::find_nearest_viewport (registry, effective_camera)
-                      == target_viewport);
+                      == vp);
 
         glm::mat4 cam_transform = wtm;
         if (cam_is_inside_viewport) {
-          // The camera's world_transform contains parent scale, which
-          // distorts the skybox and frustum.  glm::decompose extracts the
-          // pure rotation (quaternion) and translation without scale,
-          // skew or perspective — numerically stable and exact.
           glm::vec3 scale;
           glm::vec3 skew;
           glm::vec3 translation;
@@ -209,37 +189,12 @@ sys::build_render_frame (entt::registry &registry,
         out.view.view = glm::inverse (cam_transform);
         out.view.proj = glm::perspective (glm::radians (cam.fov ()), aspect,
                                           cam.near (), cam.far ());
-      } else {
-        const auto &cam2d = registry.get<comp::camera_2d> (effective_camera);
-        const auto &t2d = registry.get<comp::transform_2d> (effective_camera);
-
-        out.view.valid = true;
-        out.view.aspect_ratio = aspect;
-        out.view.world_position
-            = glm::vec3 (t2d.position.x (), t2d.position.y (), 0);
-        // World (0, 0) lands at the top-left of the game view in
-        // both the 2D and 3D paths. The projection is
-        // `ortho(0, w, h, 0, -1, 1)` — Y=0 is the top in
-        // projection space, which becomes the top of the framebuffer
-        // after the SDL GPU viewport Y-flip. The camera's
-        // `position` is the *top-left* of the visible area, and
-        // `zoom` scales world units. Sprite `transform_2d.position`
-        // is therefore in screen-pixel coordinates with (0, 0) at
-        // the top-left, just like the 3D view.
-        glm::mat4 view_mat = glm::mat4 (1.0F);
-        view_mat
-            = glm::scale (view_mat, glm::vec3 (cam2d.zoom, cam2d.zoom, 1.0F));
-        view_mat = glm::translate (
-            view_mat, glm::vec3 (-t2d.position.x () * cam2d.zoom,
-                                 -t2d.position.y () * cam2d.zoom, 0.0F));
-        out.view.view = view_mat;
-        out.view.proj
-            = glm::ortho (0.0F, (float)w, (float)h, 0.0F, -1.0F, 1.0F);
-        out.is_2d_view = true;
       }
       out.view.view_proj = out.view.proj * out.view.view;
-    } else if (!use_editor_camera) {
-      // Standalone Fallback: Look at origin from (0,0,5)
+      view_resolved = true;
+    } else if (vp == entt::null) {
+      // Root viewport keeps the historical standalone fallback: look at the
+      // origin from (0, 0, 5).
       out.view.valid = true;
       out.view.aspect_ratio = aspect;
       out.view.world_position = glm::vec3 (0, 0, 5);
@@ -248,17 +203,30 @@ sys::build_render_frame (entt::registry &registry,
       out.view.proj
           = glm::perspective (glm::radians (60.0F), aspect, 0.1F, 1000.0F);
       out.view.view_proj = out.view.proj * out.view.view;
+      view_resolved = true;
+    } else {
+      // SubViewport without an assigned (valid, mode-matching) camera: the
+      // viewport clears its target and skips all draw passes (S2).
+      return false;
+    }
+
+    // If the editor did not already flag 2D, an actual 2D camera decides.
+    if (!out.is_2d_view && effective_camera != entt::null
+        && registry.valid (effective_camera)
+        && registry.all_of<comp::camera_2d> (effective_camera)) {
+      out.is_2d_view = true;
     }
   }
 
-  // If the editor did not already set is_2d_view, check the camera entity
-  if (!out.is_2d_view && effective_camera != entt::null
-      && registry.valid (effective_camera)
-      && registry.all_of<comp::camera_2d> (effective_camera)) {
-    out.is_2d_view = true;
+  // ---- Environment (per-viewport skybox, D4/C3) ----
+  if (target.skybox.value != rsc::no_resource_id) {
+    auto cubemap = runtime_ctx.resource_manager ().get (target.skybox);
+    if (cubemap) {
+      out.environment = &(*cubemap);
+    }
   }
 
-  // Only collect 3D draw commands for non-2D views
+  // Only collect 3D draw commands for non-2D views.
   if (!out.is_2d_view) {
     const entt::entity selected_entity
         = ((runtime_ctx.editor_ctx () != nullptr) && !runtime_ctx.is_running ())
@@ -271,8 +239,8 @@ sys::build_render_frame (entt::registry &registry,
 
     for (entt::entity const entity : draw_view) {
       // Hierarchical filtering: only collect entities belonging to this
-      // viewport
-      if (!comp::entity_in_viewport_scope (registry, entity, target_viewport)) {
+      // viewport.
+      if (!comp::entity_in_viewport_scope (registry, entity, vp)) {
         continue;
       }
 
@@ -288,19 +256,6 @@ sys::build_render_frame (entt::registry &registry,
 
       // Publish the animated joint palette when the animation system produced
       // one for this entity.
-      //
-      // A null palette is what marks a draw as *not* skinned: the renderer
-      // selects its pipeline from `draw.palette != nullptr`, and the skinned
-      // pipelines declare the six-attribute vertex layout (POSITION, NORMAL,
-      // UV, COLOR, JOINTS, WEIGHTS). Static meshes carry only four, so handing
-      // them a palette would bind a skinned pipeline to buffers that cannot
-      // feed the joint attributes and they would vanish -- which is exactly
-      // what happened before this was made conditional. An entity only gets a
-      // palette when it actually has a sampled pose.
-      //
-      // Storage lives in `out` (render_submission) and is a deque, so the
-      // pointer handed to the draw command stays valid until the frame ends
-      // even as more entities are appended.
       const comp::skeleton_pose *pose
           = registry.try_get<comp::skeleton_pose> (entity);
       const gfx::scene_renderer::joint_palette *palette = nullptr;
@@ -328,79 +283,9 @@ sys::build_render_frame (entt::registry &registry,
           .palette = palette,
       });
     }
-
-    if (ctx.contains<comp::singl::rendering_manager> ()) {
-      const auto &rendering = ctx.get<comp::singl::rendering_manager> ();
-      auto cubemap = runtime_ctx.resource_manager ().get (rendering.skybox);
-      if (cubemap) {
-        out.environment = &(*cubemap);
-      }
-    }
   }
 
   return out.view.valid;
-}
-
-gfx::scene_renderer::view_state
-sys::build_camera_view_state (entt::registry &registry,
-                              entt::entity camera_entity,
-                              entt::entity fallback_camera,
-                              const gfx::viewport &vp, uint32_t window_width,
-                              uint32_t window_height)
-{
-  gfx::scene_renderer::view_state out{};
-  out.aspect_ratio = vp.aspect_ratio (window_width, window_height);
-
-  if (camera_entity == entt::null) {
-    camera_entity = fallback_camera;
-  }
-
-  if (camera_entity != entt::null
-      && registry.all_of<comp::camera, comp::world_transform> (camera_entity)) {
-    const auto &cam = registry.get<comp::camera> (camera_entity);
-    const auto &wt = registry.get<comp::world_transform> (camera_entity);
-    glm::mat4 const wtm = wt.value ();
-
-    out.valid = true;
-    out.world_position = glm::vec3 (wtm[3]);
-    out.view = glm::inverse (wtm);
-    out.proj = glm::perspective (glm::radians (cam.fov ()), out.aspect_ratio,
-                                 cam.near (), cam.far ());
-    out.view_proj = out.proj * out.view;
-  } else if (camera_entity != entt::null
-             && registry.all_of<comp::camera_2d, comp::transform_2d> (
-                 camera_entity)) {
-    const auto &cam2d = registry.get<comp::camera_2d> (camera_entity);
-    const auto &t2d = registry.get<comp::transform_2d> (camera_entity);
-
-    float const vp_w = static_cast<float> (window_width);
-    float const vp_h = static_cast<float> (window_height);
-
-    out.valid = true;
-    out.world_position = glm::vec3 (t2d.position.x (), t2d.position.y (), 0.0F);
-    // Top-left convention: the camera's `position` is the top-left
-    // of the visible area, matching the 3D-view top-left
-    // convention. The zoom scales world units.
-    glm::mat4 view_mat = glm::mat4 (1.0F);
-    view_mat = glm::scale (view_mat, glm::vec3 (cam2d.zoom, cam2d.zoom, 1.0F));
-    view_mat = glm::translate (
-        view_mat, glm::vec3 (-t2d.position.x () * cam2d.zoom,
-                             -t2d.position.y () * cam2d.zoom, 0.0F));
-    out.view = view_mat;
-    out.proj = glm::ortho (0.0F, vp_w, vp_h, 0.0F, -1.0F, 1.0F);
-    out.view_proj = out.proj * out.view;
-  } else {
-    // Fallback camera
-    out.valid = true;
-    out.world_position = glm::vec3 (0, 0, 5);
-    out.view
-        = glm::lookAt (out.world_position, glm::vec3 (0), glm::vec3 (0, 1, 0));
-    out.proj = glm::perspective (glm::radians (60.0F), out.aspect_ratio, 0.1F,
-                                 1000.0F);
-    out.view_proj = out.proj * out.view;
-  }
-
-  return out;
 }
 
 } // namespace wsl

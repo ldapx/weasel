@@ -13,6 +13,7 @@
 #include "wsl/comp/singl/runtime_context.hpp"
 #include "wsl/comp/singl/ui_manager.hpp"
 #include "wsl/comp/subviewport.hpp"
+#include "wsl/comp/viewport_settings.hpp"
 #include "wsl/comp/world_transform.hpp"
 #include "wsl/math/matrix.hpp"
 #include "wsl/math/vector.hpp"
@@ -51,6 +52,10 @@ register_editor_inspectors ()
   (entt::meta_factory<comp::subviewport_camera_ui> ()
        .func<
            &comp::subviewport_camera_ui::custom_inspect>)("custom_inspect"_hs);
+
+  // ---- shared root/sub viewport settings widget (E1) ----
+  (entt::meta_factory<comp::viewport_settings> ()
+       .func<&comp::viewport_settings::custom_inspect>)("custom_inspect"_hs);
   (entt::meta_factory<comp::animator> ()
        .func<&comp::animator::custom_inspect>)("custom_inspect"_hs);
   (entt::meta_factory<comp::rigid_body::allowed_dofs_ui> ()

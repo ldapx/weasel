@@ -1,11 +1,14 @@
 #include "subviewport.hpp"
 
+#include "../log/log.hpp"
 #include "../rsc/scene.hpp"
 #include "../rsc/scene_manager.hpp"
 #include "camera.hpp"
 #include "camera_2d.hpp"
 #include "hierarchy.hpp"
 #include "singl/runtime_context.hpp"
+#include "transform.hpp"
+#include "transform_2d.hpp"
 
 #include <entt/meta/factory.hpp>
 
@@ -28,8 +31,9 @@ subviewport_camera_ui::register_meta ()
 void
 subviewport::register_meta ()
 {
-  // Ensure subviewport_camera_ui is registered (it's not a world component)
+  // Ensure the nested UI type and the shared settings are registered.
   subviewport_camera_ui::register_meta ();
+  register_viewport_settings_meta ();
 
   using namespace entt::literals;
 
@@ -37,70 +41,95 @@ subviewport::register_meta ()
       .type (entt::type_hash<comp::subviewport>::value ())
       .custom<comp::meta_info> (meta_info{
           "Sub-Viewport",
-          "Defines a viewport sub-region in the entity hierarchy.", "" })
-      .data<&subviewport::x> ("x"_hs)
-      .custom<comp::meta_info> (
-          meta_info{ "X", "Normalized left edge (0 = left).", "" })
-      .data<&subviewport::y> ("y"_hs)
-      .custom<comp::meta_info> (
-          meta_info{ "Y", "Normalized top edge (0 = top).", "" })
-      .data<&subviewport::width> ("width"_hs)
-      .custom<comp::meta_info> (
-          meta_info{ "Width", "Normalized width (1.0 = full).", "" })
-      .data<&subviewport::height> ("height"_hs)
-      .custom<comp::meta_info> (
-          meta_info{ "Height", "Normalized height (1.0 = full).", "" })
-      .data<&subviewport::clear_color> ("clear_color"_hs)
+          "Independent rendering context for its descendants; mode is "
+          "component-driven (transform_2d = 2D, transform = 3D).",
+          "" })
+      .data<&subviewport::size> ("size"_hs)
       .custom<comp::meta_info> (meta_info{
-          "Clear Color", "Clear the color target before rendering.", "" })
-      .data<&subviewport::clear_depth> ("clear_depth"_hs)
-      .custom<comp::meta_info> (meta_info{
-          "Clear Depth", "Clear the depth target before rendering.", "" })
-      .data<&subviewport::clear_r> ("clear_r"_hs)
-      .custom<comp::meta_info> (meta_info{ "Clear R", "Red clear value.", "" })
-      .data<&subviewport::clear_g> ("clear_g"_hs)
-      .custom<comp::meta_info> (
-          meta_info{ "Clear G", "Green clear value.", "" })
-      .data<&subviewport::clear_b> ("clear_b"_hs)
-      .custom<comp::meta_info> (meta_info{ "Clear B", "Blue clear value.", "" })
-      .data<&subviewport::clear_a> ("clear_a"_hs)
-      .custom<comp::meta_info> (
-          meta_info{ "Clear Alpha", "Alpha clear value.", "" })
-      .data<&subviewport::camera_2d> ("camera_2d"_hs)
-      .custom<comp::meta_info> (
-          meta_info{ "Camera 2D", "2D camera assigned to this viewport.", "" })
-      .data<&subviewport::camera_3d> ("camera_3d"_hs)
-      .custom<comp::meta_info> (
-          meta_info{ "Camera 3D", "3D camera assigned to this viewport.", "" })
+          "2D Size", "Extents in the parent viewport's virtual space.", "" })
       .data<&subviewport::world_quad_size> ("world_quad_size"_hs)
       .custom<comp::meta_info> (
           meta_info{ "World Quad Size",
                      "Size of the quad when rendered in 3D space.", "" })
-      .data<&subviewport::container_size> ("container_size"_hs)
-      .custom<comp::meta_info> (
-          meta_info{ "Container Size", "Size in pixels for 2D overlay.", "" })
-      .data<&subviewport::container_position> ("container_position"_hs)
-      .custom<comp::meta_info> (meta_info{
-          "Container Position", "Position in pixels for 2D overlay.", "" })
       .data<&subviewport::virtual_size> ("virtual_size"_hs)
       .custom<comp::meta_info> (meta_info{
-          "Virtual Size", "Internal resolution of the viewport.", "" })
-      .data<&subviewport::render_2d_only> ("render_2d_only"_hs)
+          "Virtual Size",
+          "Internal logical canvas size used for layout and rendering.", "" })
+      .data<&subviewport::display_order> ("display_order"_hs)
       .custom<comp::meta_info> (meta_info{
-          "Render 2D Only",
-          "If true, this viewport is rendered in 2D mode only.", "" });
+          "Display Order", "2D compositing order in the parent viewport.", "" })
+      .data<&subviewport::input_routing> ("input_routing"_hs)
+      .custom<comp::meta_info> (meta_info{
+          "Input Routing", "Route pointer input into this subviewport.", "" })
+      .data<&subviewport::hdr> ("hdr"_hs)
+      .custom<comp::meta_info> (meta_info{
+          "HDR", "3D only: output raw linear HDR instead of an LDR tonemap.",
+          "" })
+      .data<&subviewport::camera> ("camera"_hs)
+      .custom<comp::meta_info> (
+          meta_info{ "Camera", "Camera assigned to this viewport.", "" })
+      .data<&subviewport::settings> ("settings"_hs)
+      .custom<comp::meta_info> (
+          meta_info{ "Settings",
+                     "Scaling, aspect, quality and environment settings.", "" })
+      .data<&subviewport::container_size> ("container_size"_hs)
+      .custom<comp::meta_info> (meta_info{
+          "Container Size", "Computed pixel rect in the parent render target.",
+          "", true });
+}
+
+subviewport_mode
+subviewport_render_mode (entt::registry &registry, entt::entity entity)
+{
+  if (entity != entt::null && registry.all_of<transform_2d> (entity)) {
+    return subviewport_mode::mode_2d;
+  }
+  return subviewport_mode::mode_3d;
+}
+
+bool
+is_2d_subviewport (entt::registry &registry, entt::entity entity)
+{
+  return entity != entt::null && registry.all_of<transform_2d> (entity);
 }
 
 entt::entity
 find_nearest_viewport (entt::registry &registry, entt::entity entity)
 {
-  entt::entity ancestor = entity;
-  while (ancestor != entt::null) {
-    if (registry.all_of<subviewport> (ancestor)) {
-      return ancestor;
+  auto parent_of = [&registry] (entt::entity e) -> entt::entity {
+    if (e == entt::null) {
+      return entt::null;
     }
-    auto *h = registry.try_get<hierarchy> (ancestor);
-    ancestor = (h != nullptr) ? h->parent : entt::null;
+    auto *h = registry.try_get<hierarchy> (e);
+    return (h != nullptr) ? h->parent : entt::null;
+  };
+
+  entt::entity current = entity;
+  entt::entity slow = entity;
+  entt::entity fast = entity;
+  bool cycle_reported = false;
+
+  while (current != entt::null) {
+    if (registry.all_of<subviewport> (current)) {
+      return current;
+    }
+
+    current = parent_of (current);
+
+    // Floyd's cycle detection over the same parent chain. A cycle is
+    // malformed hierarchy data; abort the walk instead of looping forever.
+    slow = parent_of (slow);
+    entt::entity const fast_step = parent_of (fast);
+    fast = parent_of (fast_step);
+    if (slow != entt::null && slow == fast) {
+      if (!cycle_reported) {
+        wsl::log::core ()->error (
+            "find_nearest_viewport: hierarchy cycle detected; treating the "
+            "entity as root-scoped");
+        cycle_reported = true;
+      }
+      return entt::null;
+    }
   }
   return entt::null;
 }
@@ -126,6 +155,29 @@ entity_in_viewport_scope (entt::registry &registry, entt::entity entity,
     return false;
   }
   return find_nearest_viewport (registry, entity) == target_viewport;
+}
+
+bool
+entity_casts_shadows (entt::registry &registry, entt::entity entity)
+{
+  if (entity == entt::null) {
+    return true;
+  }
+
+  // Any ancestor subviewport with `shadow_caster == false` excludes the
+  // whole subtree. Bounded walk: a malformed hierarchy cycle terminates
+  // instead of looping forever.
+  constexpr int max_depth = 4096;
+  entt::entity current = entity;
+  for (int depth = 0; current != entt::null && depth < max_depth; ++depth) {
+    auto *sv = registry.try_get<subviewport> (current);
+    if (sv != nullptr && !sv->settings.shadow_caster) {
+      return false;
+    }
+    auto *h = registry.try_get<hierarchy> (current);
+    current = (h != nullptr) ? h->parent : entt::null;
+  }
+  return true;
 }
 
 } // namespace wsl::comp

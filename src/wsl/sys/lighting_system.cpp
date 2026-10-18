@@ -4,6 +4,7 @@
 #include "../comp/directional_light.hpp"
 #include "../comp/point_light.hpp"
 #include "../comp/singl/rendering_manager.hpp"
+#include "../comp/viewport_environment.hpp"
 #include "../comp/singl/runtime_context.hpp"
 #include "../comp/spot_light.hpp"
 #include "../comp/world_transform.hpp"
@@ -47,7 +48,13 @@ lighting_system::on_render_record_draw_cmd (entt::registry &registry)
   lighting.camera_pos = glm::vec4 (renderer->camera_position (), 0.0F);
 
   glm::vec3 ambient (0.01F, 0.01F, 0.01F);
-  if (ctx.contains<comp::singl::rendering_manager> ()) {
+  if (ctx.contains<comp::resolved_viewport_environment> ()) {
+    // Per-viewport environment (C3): ambient is scoped to the viewport
+    // currently being rendered; lights themselves stay global in v1.
+    const auto &env = ctx.get<comp::resolved_viewport_environment> ();
+    ambient
+        = static_cast<glm::vec3> (env.ambient_color) * env.ambient_intensity;
+  } else if (ctx.contains<comp::singl::rendering_manager> ()) {
     const auto &rendering = ctx.get<comp::singl::rendering_manager> ();
     ambient = static_cast<glm::vec3> (rendering.ambient_color)
               * rendering.ambient_intensity;

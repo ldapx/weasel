@@ -6,6 +6,7 @@
 #include "wsl/gfx/render_context.hpp"
 #include "wsl/gfx/subviewport_target.hpp"
 #include "wsl/gfx/viewport.hpp"
+#include "wsl/rsc/window_settings.hpp"
 
 #ifndef IN_MODULE_INTERFACE
 #include <SDL3/SDL.h>
@@ -265,6 +266,21 @@ public:
     return m_linear_sampler;
   }
 
+  // Nearest sampler (per-viewport `nearest` scaling filter)
+  [[nodiscard]] gpu_sampler &
+  nearest_sampler ()
+  {
+    ensure_nearest_sampler ();
+    return m_nearest_sampler;
+  }
+
+  /** 1x1 zero HDR texture (black) used as a stand-in bloom texture. */
+  [[nodiscard]] SDL_GPUTexture *
+  zero_bloom_texture () const
+  {
+    return m_zero_bloom.get ();
+  }
+
   // Sample count
   [[nodiscard]] int
   current_sample_count () const
@@ -325,17 +341,82 @@ public:
     m_bloom_intensity = val;
   }
 
-  void create_depth_texture ();
-  void begin_3d_pass (bool clear_color = true, bool clear_depth = true,
+  void create_depth_texture (uint32_t width, uint32_t height, int sample_count);
+
+  /**
+   * Ensures the root viewport's render targets (MSAA/resolve HDR scene,
+   * bloom source, depth, bloom ping-pong) match the requested size and
+   * sample count. Lazy: reallocates only when the resolved root viewport
+   * size or MSAA setting changes (D13). The LDR present texture always
+   * matches the window size.
+   */
+  void ensure_root_targets (uint32_t width, uint32_t height, int sample_count);
+
+  /** Current root viewport render-target size in pixels. */
+  [[nodiscard]] uint32_t
+  root_target_width () const
+  {
+    return m_root_target_w;
+  }
+  [[nodiscard]] uint32_t
+  root_target_height () const
+  {
+    return m_root_target_h;
+  }
+  [[nodiscard]] int
+  root_sample_count () const
+  {
+    return m_root_sample_count;
+  }
+
+  /**
+   * Pixel rect inside the window where the root viewport content is
+   * presented (letterbox rect). Empty means full window.
+   */
+  void
+  present_rect (pixel_rect rect)
+  {
+    m_present_rect = rect;
+  }
+  [[nodiscard]] pixel_rect
+  present_rect () const
+  {
+    return m_present_rect;
+  }
+
+  /** Applies window configuration from Project Settings (standalone, D7). */
+  void apply_window_settings (const rsc::window_settings &settings);
+
+  /**
+   * Begin the root viewport scene pass.
+   *
+   * :param clear_color: Clear colour for the whole target.
+   * :param clear_color_enabled: When false the colour target is loaded.
+   * :param clear_depth: When false the depth target is loaded.
+   * :param content_rect: Pixel rect inside the root target that the GPU
+   *   viewport/scissor is set to (empty = full target).
+   */
+  void begin_3d_pass (SDL_FColor clear_color, bool clear_color_enabled,
+                      bool clear_depth, pixel_rect content_rect = {},
                       const char *label = "Main 3D Pass") const;
   void end_3d_pass (bool run_postprocess = true);
 
-  /** Begin a 3D render pass targeting a subviewport offscreen target. */
+  /** Begin a scene pass targeting a subviewport offscreen target. */
   void begin_subviewport_pass (const subviewport_target &target,
-                               bool clear_color = true, bool clear_depth = true,
+                               SDL_FColor clear_color, bool clear_color_enabled,
+                               bool clear_depth, pixel_rect content_rect = {},
                                const char *label = "Subviewport Pass") const;
   /** End the subviewport render pass (resolves MSAA, no postprocess). */
   void end_subviewport_pass ();
+
+  /**
+   * Runs the per-viewport tonemap/bloom post-process for a 3D subviewport
+   * whose `hdr` flag is false, writing display-referred output into the
+   * target's LDR texture (D4/C2).
+   */
+  void postprocess_subviewport (subviewport_target &target, float exposure,
+                                float bloom_intensity);
+
   void begin_ui_pass () const;
   void end_ui_pass () const;
   void new_swapchain ();
@@ -372,32 +453,11 @@ public:
   void postprocess_hdr_bloom ();
 
   /**
-   * Push a viewport onto the stack. The active viewport is applied to the
-   * main render pass on the next begin_3d_pass().
+   * Applies a resolved pixel rect to the active root-viewport render pass
+   * (GPU viewport + scissor). The backend only applies rects/targets; the
+   * engine-level resolve helper computes them (B1).
    */
-  void push_viewport (const gfx::viewport &viewport);
-  /**
-   * Pop the top viewport. If no viewports remain, full-screen rendering
-   * resumes.
-   */
-  void pop_viewport ();
-  /** Remove all viewports and return to full-screen rendering. */
-  void reset_viewports ();
-  /** Returns true when at least one viewport is active. */
-  [[nodiscard]] bool has_active_viewport () const;
-  /** Returns the number of active viewports. */
-  [[nodiscard]] size_t viewport_count () const;
-  /**
-   * Returns the currently active viewport (top of stack), or a full-screen
-   * default if none are pushed.
-   */
-  [[nodiscard]] gfx::viewport current_viewport () const;
-
-  /**
-   * Applies the given viewport directly to the active main render pass.
-   * Does not use the viewport stack.
-   */
-  void apply_viewport (const gfx::viewport &viewport) const;
+  void apply_content_rect (const pixel_rect &rect) const;
 
   [[nodiscard]] wsl::rsc::resource_manager *
   resource_manager () const
@@ -407,6 +467,7 @@ public:
 
 private:
   SDL_GPUSampler *ensure_linear_sampler ();
+  void ensure_nearest_sampler ();
   void destroy_texture (gpu_texture &texture) const;
 
   /**
@@ -430,7 +491,6 @@ private:
   gpu_graphics_pipeline create_blur_pipe ();
 
   wsl::rsc::resource_manager *m_res_mgr = nullptr;
-  std::vector<gfx::viewport> m_viewport_stack;
 
   // --- Private member variables (previously public) ---
   SDL_Window *m_handler = nullptr;
@@ -458,8 +518,21 @@ private:
   gpu_graphics_pipeline m_pipe_composite;
 
   gpu_sampler m_linear_sampler;
+  gpu_sampler m_nearest_sampler;
 
-  int m_current_sample_count = SDL_GPU_SAMPLECOUNT_4;
+  // ---- Root viewport render-target state ----
+  // The root scene targets are sized from the resolved root viewport (which
+  // may differ from the window size when the root uses viewport scaling).
+  // `ensure_root_targets` reallocates lazily when size or sample count
+  // changes; `m_present_tex` always tracks the window size.
+  uint32_t m_root_target_w = 0;
+  uint32_t m_root_target_h = 0;
+  int m_root_sample_count = 1;
+  pixel_rect m_present_rect{};
+  /** 1x1 zero bloom stand-in used when bloom is disabled. */
+  gpu_texture m_zero_bloom;
+
+  int m_current_sample_count = 1;
   bool m_present_to_swapchain = true;
   SDL_FColor m_scene_clear_color{ 0.1F, 0.1F, 0.1F, 1.0F };
   float m_exposure = 1.0F;

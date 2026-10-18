@@ -638,84 +638,17 @@ SubviewportProxy::bind (comp::subviewport *component)
   comp.bind (active_registry (), entity);
 }
 
-float &
-SubviewportProxy::x ()
-{
-  return comp ? comp->x : fallback_value<float> ();
-}
-
-float &
-SubviewportProxy::y ()
-{
-  return comp ? comp->y : fallback_value<float> ();
-}
-
-float &
-SubviewportProxy::width ()
-{
-  return comp ? comp->width : fallback_value<float> ();
-}
-
-float &
-SubviewportProxy::height ()
-{
-  return comp ? comp->height : fallback_value<float> ();
-}
-
-bool &
-SubviewportProxy::clear_color ()
-{
-  return comp ? comp->clear_color : fallback_value<bool> ();
-}
-
-bool &
-SubviewportProxy::clear_depth ()
-{
-  return comp ? comp->clear_depth : fallback_value<bool> ();
-}
-
-float &
-SubviewportProxy::clear_r ()
-{
-  return comp ? comp->clear_r : fallback_value<float> ();
-}
-
-float &
-SubviewportProxy::clear_g ()
-{
-  return comp ? comp->clear_g : fallback_value<float> ();
-}
-
-float &
-SubviewportProxy::clear_b ()
-{
-  return comp ? comp->clear_b : fallback_value<float> ();
-}
-
-float &
-SubviewportProxy::clear_a ()
-{
-  return comp ? comp->clear_a : fallback_value<float> ();
-}
-
-uint32_t &
-SubviewportProxy::camera_2d ()
-{
-  return comp ? reinterpret_cast<uint32_t &> (comp->camera_2d.value)
-              : fallback_value<uint32_t> ();
-}
-
-uint32_t &
-SubviewportProxy::camera_3d ()
-{
-  return comp ? reinterpret_cast<uint32_t &> (comp->camera_3d.value)
-              : fallback_value<uint32_t> ();
-}
-
 ::das::float2 &
 SubviewportProxy::world_quad_size ()
 {
   return comp ? reinterpret_cast<::das::float2 &> (comp->world_quad_size)
+              : fallback_value<::das::float2> ();
+}
+
+::das::float2 &
+SubviewportProxy::size ()
+{
+  return comp ? reinterpret_cast<::das::float2 &> (comp->size)
               : fallback_value<::das::float2> ();
 }
 
@@ -727,23 +660,35 @@ SubviewportProxy::container_size ()
 }
 
 ::das::float2 &
-SubviewportProxy::container_position ()
-{
-  return comp ? reinterpret_cast<::das::float2 &> (comp->container_position)
-              : fallback_value<::das::float2> ();
-}
-
-::das::float2 &
 SubviewportProxy::virtual_size ()
 {
   return comp ? reinterpret_cast<::das::float2 &> (comp->virtual_size)
               : fallback_value<::das::float2> ();
 }
 
-bool &
-SubviewportProxy::render_2d_only ()
+uint32_t &
+SubviewportProxy::camera ()
 {
-  return comp ? comp->render_2d_only : fallback_value<bool> ();
+  return comp ? reinterpret_cast<uint32_t &> (comp->camera.value)
+              : fallback_value<uint32_t> ();
+}
+
+int &
+SubviewportProxy::display_order ()
+{
+  return comp ? comp->display_order : fallback_value<int> ();
+}
+
+bool &
+SubviewportProxy::input_routing ()
+{
+  return comp ? comp->input_routing : fallback_value<bool> ();
+}
+
+bool &
+SubviewportProxy::hdr ()
+{
+  return comp ? comp->hdr : fallback_value<bool> ();
 }
 
 namespace
@@ -967,30 +912,19 @@ struct SubviewportProxyAnnotation
       : ::das::ManagedStructureAnnotation<SubviewportProxy, false, false> (
             "Subviewport", lib, "wsl::das::SubviewportProxy")
   {
-    addProperty<DAS_BIND_MANAGED_PROP (x)> ("x", "x");
-    addProperty<DAS_BIND_MANAGED_PROP (y)> ("y", "y");
-    addProperty<DAS_BIND_MANAGED_PROP (width)> ("width", "width");
-    addProperty<DAS_BIND_MANAGED_PROP (height)> ("height", "height");
-    addProperty<DAS_BIND_MANAGED_PROP (clear_color)> ("clear_color",
-                                                      "clear_color");
-    addProperty<DAS_BIND_MANAGED_PROP (clear_depth)> ("clear_depth",
-                                                      "clear_depth");
-    addProperty<DAS_BIND_MANAGED_PROP (clear_r)> ("clear_r", "clear_r");
-    addProperty<DAS_BIND_MANAGED_PROP (clear_g)> ("clear_g", "clear_g");
-    addProperty<DAS_BIND_MANAGED_PROP (clear_b)> ("clear_b", "clear_b");
-    addProperty<DAS_BIND_MANAGED_PROP (clear_a)> ("clear_a", "clear_a");
-    addProperty<DAS_BIND_MANAGED_PROP (camera_2d)> ("camera_2d", "camera_2d");
-    addProperty<DAS_BIND_MANAGED_PROP (camera_3d)> ("camera_3d", "camera_3d");
+    addProperty<DAS_BIND_MANAGED_PROP (size)> ("size", "size");
     addProperty<DAS_BIND_MANAGED_PROP (world_quad_size)> ("world_quad_size",
                                                           "world_quad_size");
     addProperty<DAS_BIND_MANAGED_PROP (container_size)> ("container_size",
                                                          "container_size");
-    addProperty<DAS_BIND_MANAGED_PROP (container_position)> (
-        "container_position", "container_position");
     addProperty<DAS_BIND_MANAGED_PROP (virtual_size)> ("virtual_size",
                                                        "virtual_size");
-    addProperty<DAS_BIND_MANAGED_PROP (render_2d_only)> ("render_2d_only",
-                                                         "render_2d_only");
+    addProperty<DAS_BIND_MANAGED_PROP (camera)> ("camera", "camera");
+    addProperty<DAS_BIND_MANAGED_PROP (display_order)> ("display_order",
+                                                        "display_order");
+    addProperty<DAS_BIND_MANAGED_PROP (input_routing)> ("input_routing",
+                                                        "input_routing");
+    addProperty<DAS_BIND_MANAGED_PROP (hdr)> ("hdr", "hdr");
   }
 };
 
@@ -2078,10 +2012,8 @@ each_entity_id_with (const ::das::TArray<uint32_t> &type_ids,
         continue;
       }
       const term &candidate = terms[i];
-      if ((candidate.native != nullptr
-           && !candidate.native->contains (entity))
-          || (candidate.das != nullptr
-              && !candidate.das->contains (entity))) {
+      if ((candidate.native != nullptr && !candidate.native->contains (entity))
+          || (candidate.das != nullptr && !candidate.das->contains (entity))) {
         return;
       }
     }
@@ -2576,9 +2508,9 @@ wsl_event_declare_sink (const char *event_name, const char *system_name,
     return false;
   }
   if (event_size != 0 && event_size != handler_payload_size) {
-    wsl::log::sys ()->error (
-        "event_declare_sink: payload size mismatch for '{}' (source {}, sink {})",
-        event_name, event_size, handler_payload_size);
+    wsl::log::sys ()->error ("event_declare_sink: payload size mismatch for "
+                             "'{}' (source {}, sink {})",
+                             event_name, event_size, handler_payload_size);
     return false;
   }
 
@@ -2668,8 +2600,8 @@ wsl_event_emit (::das::Context &, ::das::SimNode_CallBase *call, vec4f *args)
   if (it->second.payload_layout_hash == 0) {
     it->second.payload_layout_hash = payload_layout_hash;
   } else if (it->second.payload_layout_hash != payload_layout_hash) {
-    wsl::log::sys ()->error (
-        "event_emit: payload layout mismatch for '{}'", event_name);
+    wsl::log::sys ()->error ("event_emit: payload layout mismatch for '{}'",
+                             event_name);
     return v_zero ();
   }
 

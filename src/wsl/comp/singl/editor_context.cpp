@@ -287,12 +287,9 @@ editor_context::resolve_game_view_mode (entt::registry &registry,
       if (target_viewport != entt::null) {
         if (auto *subviewport
             = registry.try_get<comp::subviewport> (target_viewport)) {
-          if (subviewport->camera_3d.value != entt::null
-              && registry.valid (subviewport->camera_3d.value)) {
-            cam_entity = subviewport->camera_3d.value;
-          } else if (subviewport->camera_2d.value != entt::null
-                     && registry.valid (subviewport->camera_2d.value)) {
-            cam_entity = subviewport->camera_2d.value;
+          if (subviewport->camera.value != entt::null
+              && registry.valid (subviewport->camera.value)) {
+            cam_entity = subviewport->camera.value;
           }
         }
       } else {
@@ -316,14 +313,11 @@ editor_context::resolve_game_view_mode (entt::registry &registry,
 
   case game_view_camera_sel::default_editor:
   default: {
-    // Check if subviewport has render_2d_only
-    if (target_viewport != entt::null) {
-      if (auto *subviewport
-          = registry.try_get<comp::subviewport> (target_viewport)) {
-        if (subviewport->render_2d_only) {
-          return game_view_mode::mode_2d_edit;
-        }
-      }
+    // Component-driven mode: a 2D subviewport (transform_2d) uses the
+    // 2D editor camera by default.
+    if (target_viewport != entt::null
+        && comp::is_2d_subviewport (registry, target_viewport)) {
+      return game_view_mode::mode_2d_edit;
     }
 
     // Analyze viewport contents
@@ -409,13 +403,9 @@ editor_context::resolve_game_view_camera (entt::registry &registry,
     if (target_viewport != entt::null && registry.valid (target_viewport)) {
       if (auto *subviewport
           = registry.try_get<wsl::comp::subviewport> (target_viewport)) {
-        if (subviewport->camera_3d.value != entt::null
-            && registry.valid (subviewport->camera_3d.value)) {
-          out.entity (subviewport->camera_3d.value);
-          out.using_engine_default (false);
-        } else if (subviewport->camera_2d.value != entt::null
-                   && registry.valid (subviewport->camera_2d.value)) {
-          out.entity (subviewport->camera_2d.value);
+        if (subviewport->camera.value != entt::null
+            && registry.valid (subviewport->camera.value)) {
+          out.entity (subviewport->camera.value);
           out.using_engine_default (false);
         } else {
           out.using_engine_default (true);
@@ -483,12 +473,9 @@ editor_context::resolve_game_view_camera (entt::registry &registry,
         if (target_viewport != entt::null) {
           if (auto *subviewport
               = registry.try_get<comp::subviewport> (target_viewport)) {
-            if (subviewport->camera_3d.value != entt::null
-                && registry.valid (subviewport->camera_3d.value)) {
-              cam_entity = subviewport->camera_3d.value;
-            } else if (subviewport->camera_2d.value != entt::null
-                       && registry.valid (subviewport->camera_2d.value)) {
-              cam_entity = subviewport->camera_2d.value;
+            if (subviewport->camera.value != entt::null
+                && registry.valid (subviewport->camera.value)) {
+              cam_entity = subviewport->camera.value;
             }
           }
         } else {
@@ -515,12 +502,8 @@ editor_context::resolve_game_view_camera (entt::registry &registry,
                        cam_entity)) {
           const auto &cam2d = registry.get<comp::camera_2d> (cam_entity);
           const auto &t2d = registry.get<comp::transform_2d> (cam_entity);
-          float const vp_w = cam2d.use_window_as_viewport
-                                 ? static_cast<float> (w)
-                                 : cam2d.viewport_size.x ();
-          float const vp_h = cam2d.use_window_as_viewport
-                                 ? static_cast<float> (h)
-                                 : cam2d.viewport_size.y ();
+          float const vp_w = static_cast<float> (w);
+          float const vp_h = static_cast<float> (h);
           out.world_pos (
               glm::vec3 (t2d.position.x (), t2d.position.y (), 0.0F));
           out.proj (glm::ortho (0.0F, vp_w, (float)vp_h, 0.0F, -1.0F, 1.0F));
@@ -559,12 +542,8 @@ editor_context::resolve_game_view_camera (entt::registry &registry,
                    out.entity ())) {
       const auto &cam2d = registry.get<comp::camera_2d> (out.entity ());
       const auto &t2d = registry.get<comp::transform_2d> (out.entity ());
-      float const vp_w = cam2d.use_window_as_viewport
-                             ? static_cast<float> (w)
-                             : cam2d.viewport_size.x ();
-      float const vp_h = cam2d.use_window_as_viewport
-                             ? static_cast<float> (h)
-                             : cam2d.viewport_size.y ();
+      float const vp_w = static_cast<float> (w);
+      float const vp_h = static_cast<float> (h);
       out.world_pos (glm::vec3 (t2d.position.x (), t2d.position.y (), 0.0F));
       glm::mat4 view_mat = glm::mat4 (1.0F);
       view_mat

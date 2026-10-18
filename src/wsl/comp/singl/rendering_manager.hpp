@@ -4,10 +4,10 @@
 #include "../../gfx/batch_renderer_2d.hpp"
 #include "../../gfx/model_3d.hpp"
 #include "../../gfx/subviewport_target.hpp"
-#include "../../gfx/viewport.hpp"
 #include "../../rsc/resource_manager.hpp"
 #include "../component_meta.hpp"
 #include "../transform.hpp"
+#include "../viewport_settings.hpp"
 
 #ifndef IN_MODULE_INTERFACE
 #include <entt/entt.hpp>
@@ -30,6 +30,17 @@ namespace comp::singl
 
 struct rendering_manager : singleton_component
 {
+  rendering_manager ()
+  {
+    // Fresh-scene root defaults (D12): no automatic scaling with an ignored
+    // aspect ratio (the historical fullscreen stretch) and an update every
+    // frame. Sub-viewport defaults stay at viewport scaling + `when_visible`
+    // in `viewport_settings`.
+    root_viewport.scale_mode = comp::viewport_scale_mode::disabled;
+    root_viewport.aspect_policy = comp::viewport_aspect_policy::ignore;
+    root_viewport.update_mode = comp::viewport_update_mode::always;
+  }
+
   std::unique_ptr<gfx::scene_renderer> renderer;
   std::unique_ptr<gfx::batch_renderer_2d> renderer_2d;
   rsc::cubemap_id skybox{};
@@ -64,19 +75,33 @@ struct rendering_manager : singleton_component
   float shadow_strength = 1.0F;
 
   /**
-   * Active viewports for this scene. If empty, a fullscreen root viewport is
-   * used.
+   * Root viewport configuration (R1): the same shared `viewport_settings`
+   * definitions used by subviewports. Only mode-relevant properties are
+   * shown by the editor. The root viewport's environment follows the scene
+   * environment above when `root_viewport.env.*_use_global` is set.
    */
-  std::vector<gfx::viewport> viewports;
+  comp::viewport_settings root_viewport{};
 
   /** The active render viewport entity (null = Root Viewport). */
   entt::entity render_viewport = entt::null;
 
   /**
-   * Design/virtual size for the root viewport, used by the editor 2D game view
-   * as a guizmo reference.
+   * Base/design resolution for the root viewport, aliased to the "Base
+   * Resolution" project setting (D1). Drives 2D layout and viewport scaling.
    */
   math::vec2f root_viewport_virtual_size{ 1920.0F, 1080.0F };
+
+  /**
+   * Computed, read-only: effective rendering dimensions of the root viewport
+   * (the root render target size). Updated every frame by the render system.
+   */
+  math::vec2f root_viewport_resolution{ 0.0F, 0.0F };
+
+  /**
+   * Computed, read-only: the root viewport's container size (window size in
+   * standalone builds, Game View panel rect in the editor).
+   */
+  math::vec2f root_container_size{ 0.0F, 0.0F };
 
   /** Offscreen GPU targets for subviewport entities. */
   std::unordered_map<entt::entity, gfx::subviewport_target> subviewport_targets;
@@ -276,13 +301,33 @@ struct rendering_manager : singleton_component
             meta_info{ "Render Viewport",
                        "Active viewport entity used for the game view.", "" })
 
+        .data<&comp::singl::rendering_manager::root_viewport> (
+            "root_viewport"_hs)
+        .custom<comp::meta_info> (meta_info{
+            "Root Viewport Settings",
+            "Scaling, aspect ratio, quality and environment settings for the "
+            "scene's root viewport.",
+            "" })
+
         .data<&comp::singl::rendering_manager::root_viewport_virtual_size> (
             "root_viewport_virtual_size"_hs)
-        .custom<comp::meta_info> (
-            meta_info{ "Root Viewport Virtual Size",
-                       "Design size for the root viewport used in the editor "
-                       "2D game view.",
-                       "" });
+        .custom<comp::meta_info> (meta_info{
+            "Base Resolution",
+            "Design resolution for the root viewport (per-scene).", "" })
+
+        .data<&comp::singl::rendering_manager::root_viewport_resolution> (
+            "root_viewport_resolution"_hs)
+        .custom<comp::meta_info> (meta_info{
+            "Root Viewport Resolution",
+            "Computed rendering dimensions of the root viewport.", "", true })
+
+        .data<&comp::singl::rendering_manager::root_container_size> (
+            "root_container_size"_hs)
+        .custom<comp::meta_info> (meta_info{
+            "Container Size",
+            "Computed output area (window / Game View panel).", "", true });
+
+    register_viewport_settings_meta ();
 
     entt::meta_factory<rsc::cubemap_id> ()
         .type (entt::type_hash<rsc::cubemap_id>::value ())

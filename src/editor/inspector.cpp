@@ -147,6 +147,88 @@ struct component_header_result
   bool remove_requested = false;
 };
 
+// Renders a reflected field marked `meta_info::read_only` as plain text.
+// Used for derived values such as resolved viewport resolutions, which must
+// never be authored directly.
+static void
+draw_read_only_meta_value (const entt::meta_any &value)
+{
+  auto const type = value.type ();
+
+  auto draw_vec = [] (const entt::meta_any &v, int components) {
+    float data[4]{ 0.0F, 0.0F, 0.0F, 0.0F };
+    switch (components) {
+    case 2: {
+      auto const vec = v.cast<wsl::math::vec2f> ();
+      data[0] = vec.x ();
+      data[1] = vec.y ();
+      break;
+    }
+    case 3: {
+      auto const vec = v.cast<wsl::math::vec3f> ();
+      data[0] = vec.x ();
+      data[1] = vec.y ();
+      data[2] = vec.z ();
+      break;
+    }
+    case 4:
+    default: {
+      auto const vec = v.cast<wsl::math::vec4f> ();
+      data[0] = vec.x ();
+      data[1] = vec.y ();
+      data[2] = vec.z ();
+      data[3] = vec.w ();
+      break;
+    }
+    }
+    ImGui::TextDisabled ("%.2f, %.2f", data[0], data[1]);
+    if (components >= 3) {
+      ImGui::SameLine ();
+      ImGui::TextDisabled ("%.2f", data[2]);
+    }
+    if (components >= 4) {
+      ImGui::SameLine ();
+      ImGui::TextDisabled ("%.2f", data[3]);
+    }
+  };
+
+  if (type == entt::resolve<wsl::math::vec2f> ()) {
+    draw_vec (value, 2);
+    return;
+  }
+  if (type == entt::resolve<wsl::math::vec3f> ()) {
+    draw_vec (value, 3);
+    return;
+  }
+  if (type == entt::resolve<wsl::math::vec4f> ()) {
+    draw_vec (value, 4);
+    return;
+  }
+  if (type == entt::resolve<float> ()) {
+    ImGui::TextDisabled ("%.3f", value.cast<float> ());
+    return;
+  }
+  if (type == entt::resolve<int> ()) {
+    ImGui::TextDisabled ("%d", value.cast<int> ());
+    return;
+  }
+  if (type == entt::resolve<bool> ()) {
+    ImGui::TextDisabled ("%s", value.cast<bool> () ? "true" : "false");
+    return;
+  }
+  if (type.is_enum ()) {
+    entt::meta_any copy = value;
+    if (copy.allow_cast<int> ()) {
+      ImGui::TextDisabled ("%d", copy.cast<int> ());
+      return;
+    }
+    ImGui::TextDisabled ("<enum>");
+    return;
+  }
+
+  ImGui::TextDisabled ("<computed>");
+}
+
 static component_header_result
 draw_component_header (entt::id_type type_id, const char *display_name,
                        const char *type_name, const std::string &icon,
@@ -815,9 +897,8 @@ inspector::draw_meta_class (entt::meta_any &object, const glm::vec3 &scale,
 
   // If the class provides a full custom inspector, let it run.
   if (auto fn = type.func (entt::hashed_string{ "custom_inspect" }); fn) {
-    if (entt::meta_any ret
-            = fn.invoke (object, static_cast<const char *> ("##component"),
-                         m_runtime_ctx);
+    if (entt::meta_any ret = fn.invoke (
+            object, static_cast<const char *> ("##component"), m_runtime_ctx);
         ret) {
       (void)ret.allow_cast<bool> ();
       const bool changed = ret.cast<bool> ();
@@ -834,7 +915,8 @@ inspector::draw_meta_class (entt::meta_any &object, const glm::vec3 &scale,
     }
 
     if (entt::meta_any ret
-        = fn.invoke (object, static_cast<const char *> ("##component")); ret) {
+        = fn.invoke (object, static_cast<const char *> ("##component"));
+        ret) {
       (void)ret.allow_cast<bool> ();
       const bool changed = ret.cast<bool> ();
 
@@ -895,6 +977,27 @@ inspector::draw_meta_class (entt::meta_any &object, const glm::vec3 &scale,
 
     const std::string field_name
         = wsl::comp::meta_display_name (data, "<unnamed>");
+
+    // Derived/computed fields render as read-only text and never write back.
+    auto const read_only_info = wsl::comp::get_meta_info (data);
+    if (read_only_info && read_only_info->read_only) {
+      ImGui::TextUnformatted (field_name.c_str ());
+      if (ImGui::IsItemHovered ()) {
+        ImGui::BeginTooltip ();
+        ImGui::Text ("Type: %s", meta_type_debug_name (data.type ()).c_str ());
+        const std::string desc = get_description (data);
+        if (!desc.empty ()) {
+          ImGui::Separator ();
+          ImGui::TextWrapped ("%s", desc.c_str ());
+        }
+        ImGui::EndTooltip ();
+      }
+      ImGui::PushItemWidth (-1.0F);
+      draw_read_only_meta_value (value);
+      ImGui::PopItemWidth ();
+      ImGui::PopID ();
+      continue;
+    }
 
     // --- Field name line with refresh button anchored right ---
     float line_start_x = ImGui::GetCursorPosX ();

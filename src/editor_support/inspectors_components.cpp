@@ -11,6 +11,7 @@
 #include "wsl/comp/singl/editor_context.hpp"
 #include "wsl/comp/singl/runtime_context.hpp"
 #include "wsl/comp/subviewport.hpp"
+#include "wsl/comp/transform_2d.hpp"
 #include "wsl/comp/world_transform.hpp"
 #include "wsl/phys/layers.hpp"
 #include "wsl/rsc/scene.hpp"
@@ -180,6 +181,11 @@ subviewport_camera_ui::custom_inspect (
   if (self == entt::null || !registry.all_of<subviewport> (self)) {
     self = entt::null;
   }
+
+  // Component-driven mode: 2D subviewports (transform_2d) list
+  // camera_2d descendants; 3D subviewports list camera descendants (S2/E1).
+  bool const filter_2d
+      = (self != entt::null) && registry.all_of<comp::transform_2d> (self);
 
   const char *preview = "None";
   if (value != entt::null && registry.valid (value)) {

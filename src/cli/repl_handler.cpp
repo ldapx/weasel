@@ -763,7 +763,7 @@ set_das_field_value (uint8_t *field_ptr, const DasField &field,
       if (lane.is_number_unsigned ()) {
         const auto value = lane.get<std::uint64_t> ();
         if (value > static_cast<std::uint64_t> (
-                        std::numeric_limits<std::int32_t>::max ())) {
+                std::numeric_limits<std::int32_t>::max ())) {
           out_msg = "vector lane is outside the int32 range";
           return false;
         }
@@ -1868,8 +1868,8 @@ command_executor::cmd_scene (const std::vector<std::string> &tokens)
       const auto *pool
           = m_rtc.component_registry ().das_component_pool (reg, desc->type_id);
       if (pool != nullptr && pool->size () != 0) {
-        m_output << "  - " << desc->display_name << ": "
-                 << pool->size () << "\n";
+        m_output << "  - " << desc->display_name << ": " << pool->size ()
+                 << "\n";
       }
     }
   }
@@ -2322,6 +2322,14 @@ command_executor::cmd_comp (const std::vector<std::string> &tokens)
     };
     std::vector<cl> chain;
 
+    // `meta_data::get()` hands out an owned value for nested fields, so the
+    // intermediate `meta_any` objects must stay alive for the whole
+    // traversal -- otherwise `cur` below would point into freed storage and
+    // the write-back would corrupt unrelated memory. Reserve up front so the
+    // vector never reallocates while these pointers are live.
+    std::vector<entt::meta_any> scratch;
+    scratch.reserve (segments.size ());
+
     void *cur = comp_ptr;
     entt::meta_type cur_meta = meta;
     for (size_t i = 0; i + 1 < segments.size (); ++i) {
@@ -2344,7 +2352,8 @@ command_executor::cmd_comp (const std::vector<std::string> &tokens)
         m_output << "Cannot access " << segments[i] << " (null or unset)\n";
         return;
       }
-      void *np = const_cast<void *> (s.base ().data ());
+      scratch.push_back (std::move (s));
+      void *np = const_cast<void *> (scratch.back ().base ().data ());
       if (!np) {
         m_output << "Cannot resolve field " << segments[i] << "\n";
         return;
@@ -2782,6 +2791,11 @@ command_executor::cmd_singl (const std::vector<std::string> &tokens)
     };
     std::vector<cl> chain;
 
+    // Keep intermediate field copies alive for the whole traversal (see the
+    // component path above for the dangling-storage rationale).
+    std::vector<entt::meta_any> scratch;
+    scratch.reserve (segments.size ());
+
     void *cur = ptr;
     entt::meta_type cur_meta = meta;
     for (size_t i = 0; i + 1 < segments.size (); ++i) {
@@ -2804,7 +2818,8 @@ command_executor::cmd_singl (const std::vector<std::string> &tokens)
         m_output << "Cannot access " << segments[i] << " (null or unset)\n";
         return;
       }
-      void *np = const_cast<void *> (s.base ().data ());
+      scratch.push_back (std::move (s));
+      void *np = const_cast<void *> (scratch.back ().base ().data ());
       if (!np) {
         m_output << "Cannot resolve field " << segments[i] << "\n";
         return;

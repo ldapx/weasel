@@ -53,6 +53,8 @@ public:
     int z_index = 0;
     bool flip_h = false;
     bool flip_v = false;
+    /** Use nearest-neighbour sampling for this draw (viewport filter). */
+    bool nearest_filter = false;
   };
 
   batch_renderer_2d (wsl::gfx::render_window &window, render_context *ctx,
@@ -103,6 +105,7 @@ private:
     SDL_GPUTexture *texture = nullptr;
     uint32_t first_vertex = 0;
     uint32_t vertex_count = 0;
+    bool nearest_filter = false;
   };
 
   std::vector<draw_command> m_queue;
@@ -113,6 +116,7 @@ private:
 
   gpu_graphics_pipeline m_pipeline;
   gpu_sampler m_sampler;
+  gpu_sampler m_nearest_sampler;
   gpu_buffer m_vbo;
   gpu_transfer_buffer m_vbo_transfer;
 

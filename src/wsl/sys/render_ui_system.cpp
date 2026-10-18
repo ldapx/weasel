@@ -7,19 +7,68 @@
 #include <SDL3/SDL_mouse.h>
 #include <entt/entity/entity.hpp>
 #include <entt/entity/fwd.hpp>
+#include <algorithm>
+#include <cmath>
 #include <string>
 
 #include "wsl/event/event_hub.hpp"
+#include "wsl/comp/singl/rendering_manager.hpp"
 #include "wsl/comp/singl/ui_manager.hpp"
 #include "wsl/comp/singl/runtime_context.hpp"
 #include "wsl/comp/singl/editor_context.hpp"
 #include "wsl/comp/singl/engine_resources.hpp"
+#include "wsl/gfx/ui_canvas.hpp"
+#include "wsl/gfx/viewport_resolve.hpp"
+#include "wsl/rsc/resource_manager.hpp"
 
 namespace wsl
 {
 
 namespace sys
 {
+
+namespace
+{
+
+/**
+ * Resolves the root viewport for the Virtual-Canvas UI (D15/U1). The
+ * container is the present texture in editor mode (window-sized) and the
+ * window in standalone builds.
+ */
+gfx::resolved_viewport
+resolve_root_ui_viewport (comp::singl::runtime_context &runtime_ctx)
+{
+  int width = 0;
+  int height = 0;
+  if ((runtime_ctx.editor_ctx () != nullptr)
+      && !runtime_ctx.editor_ctx ()->game_fullscreen ()) {
+    width = static_cast<int> (runtime_ctx.window ().present_tex ().width);
+    height = static_cast<int> (runtime_ctx.window ().present_tex ().height);
+  } else {
+    runtime_ctx.window ().get_size (width, height);
+  }
+
+  comp::viewport_quality_defaults quality{};
+  if (auto project = runtime_ctx.resource_manager ().current_project ()) {
+    quality = project->window.quality;
+  }
+
+  comp::viewport_settings settings{};
+  math::vec2f base{ 1920.0F, 1080.0F };
+  if (auto *rendering = runtime_ctx.get_active_rendering_manager ();
+      rendering != nullptr) {
+    settings = rendering->root_viewport;
+    base = rendering->root_viewport_virtual_size;
+  }
+
+  return gfx::resolve_viewport (
+      settings,
+      math::vec2f{ static_cast<float> (std::max (width, 1)),
+                   static_cast<float> (std::max (height, 1)) },
+      base, settings.resolved_render_scale (quality.render_scale));
+}
+
+} // namespace
 
 void
 render_ui_system::register_event_sources (event::event_hub &hub)
@@ -131,34 +180,55 @@ render_ui_system::on_render_record_draw_cmd (entt::registry &registry)
     return;
   }
 
-  int width;
-  int height;
-  if ((runtime_ctx.editor_ctx () != nullptr)
-      && !runtime_ctx.editor_ctx ()->game_fullscreen ()) {
-    // In editor mode, RmlUi should match the present_tex size
-    width = (int)runtime_ctx.window ().present_tex ().width;
-    height = (int)runtime_ctx.window ().present_tex ().height;
-  } else {
-    runtime_ctx.window ().get_size (width, height);
+  // Nothing to composite while no document is configured.
+  if (ui.active_document_instance () == nullptr
+      && ui.active_document_id ().value == entt::null) {
+    return;
   }
 
-  // Update context size if it changed
-  Rml::Vector2i const current_size = ui.context ()->GetDimensions ();
-  if (current_size.x != width || current_size.y != height) {
-    ui.context ()->SetDimensions (Rml::Vector2i{ width, height });
+  // Virtual-canvas UI (D15/U1): RmlUi renders at the root viewport's virtual
+  // (base) resolution into an offscreen canvas, which is then composited
+  // through the resolved output rect so the UI scales with the viewport's
+  // scaling mode and aspect ratio policy.
+  gfx::resolved_viewport const resolved
+      = resolve_root_ui_viewport (runtime_ctx);
+
+  uint32_t const virt_w
+      = static_cast<uint32_t> (std::max (1.0F, resolved.virtual_size.x ()));
+  uint32_t const virt_h
+      = static_cast<uint32_t> (std::max (1.0F, resolved.virtual_size.y ()));
+
+  Rml::Vector2i const dimensions{ static_cast<int> (virt_w),
+                                  static_cast<int> (virt_h) };
+  Rml::Vector2i const current = ui.context ()->GetDimensions ();
+  if (current.x != dimensions.x || current.y != dimensions.y) {
+    ui.context ()->SetDimensions (dimensions);
   }
 
-  if (ui.render_interface ()) {
-    ui.render_interface ()->BeginFrame (
-        runtime_ctx.window ().ctx ()->main_cmd,
-        runtime_ctx.window ().present_tex ().texture_data, width, height);
+  auto &window = runtime_ctx.window ();
+  gfx::ui_canvas &canvas
+      = ui.ensure_virtual_canvas (*window.ctx (), window, virt_w, virt_h);
+  if (!canvas.valid ()) {
+    return;
+  }
+
+  canvas.begin_frame (*window.ctx ());
+
+  if (ui.render_interface () != nullptr) {
+    ui.render_interface ()->BeginFrame (window.ctx ()->main_cmd,
+                                        canvas.texture (), virt_w, virt_h);
   }
 
   ui.context ()->Render ();
 
-  if (ui.render_interface ()) {
+  if (ui.render_interface () != nullptr) {
     ui.render_interface ()->EndFrame ();
   }
+
+  // Standalone builds present the UI to the swapchain as well; editors sample
+  // `present_tex` into their game view and keep their host window separate.
+  bool const standalone = runtime_ctx.editor_ctx () == nullptr;
+  canvas.composite (window, resolved.output_rect, standalone);
 }
 
 void
@@ -179,8 +249,16 @@ render_ui_system::handle_sdl_event (entt::registry &registry,
     return;
   }
 
-  if ((runtime_ctx.editor_ctx () != nullptr)
-      && !runtime_ctx.editor_ctx ()->game_fullscreen ()) {
+  // Virtual-canvas pointer translation (D15/U1): window space -> present
+  // pixels (editor game view) -> root viewport virtual space.
+  gfx::resolved_viewport const resolved
+      = resolve_root_ui_viewport (runtime_ctx);
+
+  bool const in_editor_game_view
+      = (runtime_ctx.editor_ctx () != nullptr)
+        && !runtime_ctx.editor_ctx ()->game_fullscreen ();
+
+  if (in_editor_game_view) {
     SDL_Event adjusted_ev = ev.sdl ();
     bool process = true;
 
@@ -202,17 +280,23 @@ render_ui_system::handle_sdl_event (entt::registry &registry,
       float mouse_y = 0.0F;
       SDL_GetMouseState (&mouse_x, &mouse_y);
 
+      math::vec2f virtual_point{ 0.0F, 0.0F };
+      bool const inside = gfx::map_output_point_to_virtual (
+          math::vec2f{ (mouse_x - img_x) * scale_x,
+                       (mouse_y - img_y) * scale_y },
+          resolved, virtual_point);
+
       if (ev.type () == SDL_EVENT_MOUSE_MOTION) {
-        adjusted_ev.motion.x = (mouse_x - img_x) * scale_x;
-        adjusted_ev.motion.y = (mouse_y - img_y) * scale_y;
+        adjusted_ev.motion.x = virtual_point.x ();
+        adjusted_ev.motion.y = virtual_point.y ();
       } else if (ev.type () == SDL_EVENT_MOUSE_BUTTON_DOWN
                  || ev.type () == SDL_EVENT_MOUSE_BUTTON_UP) {
-        adjusted_ev.button.x = (mouse_x - img_x) * scale_x;
-        adjusted_ev.button.y = (mouse_y - img_y) * scale_y;
+        adjusted_ev.button.x = virtual_point.x ();
+        adjusted_ev.button.y = virtual_point.y ();
 
-        // Optional: ignore clicks outside the game view
-        if (mouse_x < img_x || mouse_x > img_x + img_w || mouse_y < img_y
-            || mouse_y > img_y + img_h) {
+        // Ignore clicks outside the game view / virtual canvas.
+        if (!inside || mouse_x < img_x || mouse_x > img_x + img_w
+            || mouse_y < img_y || mouse_y > img_y + img_h) {
           process = false;
         }
       }
@@ -223,9 +307,27 @@ render_ui_system::handle_sdl_event (entt::registry &registry,
                                  runtime_ctx.window ().handler (), adjusted_ev);
     }
   } else {
-    SDL_Event ev_copy = ev.sdl ();
+    // Standalone: map the window point straight into virtual space.
+    SDL_Event adjusted_ev = ev.sdl ();
+    float mouse_x = 0.0F;
+    float mouse_y = 0.0F;
+    SDL_GetMouseState (&mouse_x, &mouse_y);
+
+    math::vec2f virtual_point{ 0.0F, 0.0F };
+    gfx::map_output_point_to_virtual (math::vec2f{ mouse_x, mouse_y }, resolved,
+                                      virtual_point);
+
+    if (ev.type () == SDL_EVENT_MOUSE_MOTION) {
+      adjusted_ev.motion.x = virtual_point.x ();
+      adjusted_ev.motion.y = virtual_point.y ();
+    } else if (ev.type () == SDL_EVENT_MOUSE_BUTTON_DOWN
+               || ev.type () == SDL_EVENT_MOUSE_BUTTON_UP) {
+      adjusted_ev.button.x = virtual_point.x ();
+      adjusted_ev.button.y = virtual_point.y ();
+    }
+
     RmlSDL::InputEventHandler (ui.context (), runtime_ctx.window ().handler (),
-                               ev_copy);
+                               adjusted_ev);
   }
 }
 

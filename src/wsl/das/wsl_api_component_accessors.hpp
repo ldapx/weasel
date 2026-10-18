@@ -90,14 +90,19 @@ template <typename T> struct component_ref
   get () const
   {
     entt::registry *active = active_registry ();
-    if (registry == nullptr || active != registry || !registry->valid (entity)) {
+    if (registry == nullptr || active != registry
+        || !registry->valid (entity)) {
       return nullptr;
     }
     return registry->template try_get<T> (entity);
   }
 
-  operator T * () const { return get (); }
-  T *operator-> () const { return get (); }
+  operator T *() const { return get (); }
+  T *
+  operator->() const
+  {
+    return get ();
+  }
 };
 
 // The vector properties below are exposed to daslang as references to the
@@ -331,23 +336,14 @@ struct SubviewportProxy
   bool valid () const;
   void bind (comp::subviewport *component);
 
-  float &x ();
-  float &y ();
-  float &width ();
-  float &height ();
-  bool &clear_color ();
-  bool &clear_depth ();
-  float &clear_r ();
-  float &clear_g ();
-  float &clear_b ();
-  float &clear_a ();
-  uint32_t &camera_2d ();
-  uint32_t &camera_3d ();
+  ::das::float2 &size ();
   ::das::float2 &world_quad_size ();
   ::das::float2 &container_size ();
-  ::das::float2 &container_position ();
   ::das::float2 &virtual_size ();
-  bool &render_2d_only ();
+  uint32_t &camera ();
+  int &display_order ();
+  bool &input_routing ();
+  bool &hdr ();
 };
 
 HierarchyProxy get_hierarchy_accessor (uint32_t entity,

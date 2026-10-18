@@ -127,6 +127,13 @@ private:
    * `std::binary_search`. Built alongside `m_cached_systems`.
    */
   std::vector<entt::id_type> m_cached_core_ids;
+
+  /**
+   * Project whose window configuration (D7) was last applied to the
+   * standalone game window. Standalone builds only; the editor preserves its
+   * host window settings.
+   */
+  const void *m_window_settings_project = nullptr;
 };
 
 } // namespace sys

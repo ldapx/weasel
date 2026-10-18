@@ -1,8 +1,11 @@
 #pragma once
 
+#include "../comp/subviewport.hpp"
+#include "../comp/viewport_settings.hpp"
 #include "../gfx/cubemap.hpp"
 #include "../gfx/scene_renderer.hpp"
-#include "../gfx/viewport.hpp"
+#include "../gfx/viewport_resolve.hpp"
+#include "../rsc/resource_ids.hpp"
 
 #ifndef IN_MODULE_INTERFACE
 #include <entt/entt.hpp>
@@ -50,21 +53,33 @@ struct render_submission
   void reset ();
 };
 
+/**
+ * Identifies the viewport a render submission is built for.
+ *
+ * `viewport == entt::null` is the scene root viewport. The resolved viewport
+ * supplies the camera aspect ratio and the 2D orthographic extents; the
+ * mode is component-driven (D3/S2).
+ */
+struct render_view_target
+{
+  entt::entity viewport = entt::null;
+  comp::subviewport_mode mode = comp::subviewport_mode::mode_3d;
+  gfx::resolved_viewport resolved{};
+  /** Resolved per-viewport environment skybox (D4). */
+  rsc::cubemap_id skybox{};
+};
+
+/**
+ * Builds the draw submission for one viewport.
+ *
+ * Returns false when the viewport has no valid camera: the caller must then
+ * clear its render target with the configured clear colour/depth and skip
+ * all draw passes (S2).
+ */
 bool build_render_frame (entt::registry &registry,
                          comp::singl::runtime_context &runtime_ctx,
                          render_submission &out,
-                         entt::entity target_viewport = entt::null);
-
-/**
- * Builds a view_state for a specific camera entity and viewport.
- *
- * If camera_entity is entt::null, fallback_camera is used. If that is also
- * entt::null, a default fallback camera at (0,0,5) is created.
- */
-gfx::scene_renderer::view_state
-build_camera_view_state (entt::registry &registry, entt::entity camera_entity,
-                         entt::entity fallback_camera, const gfx::viewport &vp,
-                         uint32_t window_width, uint32_t window_height);
+                         const render_view_target &target);
 
 } // namespace sys
 

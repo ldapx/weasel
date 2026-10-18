@@ -55,6 +55,21 @@ render_window::ensure_linear_sampler ()
 }
 
 void
+render_window::ensure_nearest_sampler ()
+{
+  if (!m_nearest_sampler) {
+    SDL_GPUSamplerCreateInfo si{};
+    si.min_filter = SDL_GPU_FILTER_NEAREST;
+    si.mag_filter = SDL_GPU_FILTER_NEAREST;
+    si.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+    si.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    si.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    m_nearest_sampler = gpu_sampler (m_ctx->gpu_device, si);
+  }
+}
+
+void
 render_window::destroy_texture (gpu_texture &texture) const
 {
   texture.reset ();
@@ -300,6 +315,7 @@ render_window::~render_window ()
   m_pipe_composite.reset ();
 
   m_linear_sampler.reset ();
+  m_nearest_sampler.reset ();
 
   m_bloom_a.reset ();
   m_bloom_b.reset ();
@@ -307,6 +323,7 @@ render_window::~render_window ()
   m_hdr_bloom_src.reset ();
   m_msaa_hdr_scene.reset ();
   m_msaa_hdr_bloom.reset ();
+  m_zero_bloom.reset ();
 
   m_depth_texture.reset ();
   // m_present_tex.texture_data is a raw pointer (from
@@ -353,26 +370,29 @@ render_window::get_size (int &width, int &height) const
 }
 
 void
-render_window::create_depth_texture ()
+render_window::create_depth_texture (uint32_t width, uint32_t height,
+                                     int sample_count)
 {
   if (m_ctx->gpu_device == nullptr || m_handler == nullptr)
     return;
 
   destroy_texture (m_depth_texture);
 
-  int w;
-  int h;
-  SDL_GetWindowSizeInPixels (m_handler, &w, &h);
+  if (width == 0 || height == 0) {
+    return;
+  }
 
   SDL_GPUTextureCreateInfo info{};
   info.type = SDL_GPU_TEXTURETYPE_2D;
   info.format = m_depth_format;
   info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
-  info.width = (uint32_t)w;
-  info.height = (uint32_t)h;
+  info.width = width;
+  info.height = height;
   info.layer_count_or_depth = 1;
   info.num_levels = 1;
-  info.sample_count = SDL_GPU_SAMPLECOUNT_4; // MSAA matches MRT pass
+  info.sample_count = (sample_count >= 4)   ? SDL_GPU_SAMPLECOUNT_4
+                      : (sample_count >= 2) ? SDL_GPU_SAMPLECOUNT_2
+                                            : SDL_GPU_SAMPLECOUNT_1;
 
   m_depth_texture = gpu_texture (m_ctx->gpu_device, info);
   if (!m_depth_texture) {
@@ -387,12 +407,178 @@ render_window::create_depth_texture ()
 }
 
 void
-render_window::begin_3d_pass (bool clear_color, bool clear_depth,
+render_window::ensure_root_targets (uint32_t width, uint32_t height,
+                                    int sample_count)
+{
+  ZoneScoped;
+  if (m_ctx->gpu_device == nullptr || m_handler == nullptr) {
+    return;
+  }
+
+  int win_w = 0;
+  int win_h = 0;
+  SDL_GetWindowSizeInPixels (m_handler, &win_w, &win_h);
+  if (win_w <= 0 || win_h <= 0) {
+    return;
+  }
+
+  width = std::max (1U, width);
+  height = std::max (1U, height);
+  sample_count = (sample_count >= 4) ? 4 : (sample_count >= 2) ? 2 : 1;
+
+  bool const present_matches
+      = m_present_tex.texture_data != nullptr
+        && m_present_tex.width == static_cast<uint32_t> (win_w)
+        && m_present_tex.height == static_cast<uint32_t> (win_h);
+  bool const root_matches = m_root_target_w == width
+                            && m_root_target_h == height
+                            && m_root_sample_count == sample_count
+                            && m_hdr_scene && m_depth_texture;
+
+  if (present_matches && root_matches) {
+    return;
+  }
+
+  wsl::log::gfx ()->debug ("Root viewport targets: {}x{} @{}x (window {}x{})",
+                           width, height, sample_count, win_w, win_h);
+
+  SDL_WaitForGPUIdle (m_ctx->gpu_device);
+
+  // ---- Root scene targets (size = resolved root viewport) ----
+  bool const size_matches = m_root_target_w == width
+                            && m_root_target_h == height
+                            && m_root_sample_count == sample_count;
+  if (!size_matches) {
+    destroy_texture (m_msaa_hdr_scene);
+    destroy_texture (m_msaa_hdr_bloom);
+    destroy_texture (m_hdr_scene);
+    destroy_texture (m_hdr_bloom_src);
+    destroy_texture (m_bloom_a);
+    destroy_texture (m_bloom_b);
+  }
+
+  auto create_hdr_target = [&] (const SDL_GPUTextureCreateInfo &ci,
+                                const char *name) {
+    SDL_GPUTexture *tex = SDL_CreateGPUTexture (m_ctx->gpu_device, &ci);
+    if (tex == nullptr) {
+      wsl::log::gfx ()->error ("Failed to create HDR render target ({}x{}): {}",
+                               ci.width, ci.height, SDL_GetError ());
+      return tex;
+    }
+    wsl::gfx::tracy_alloc_texture (tex, ci);
+    SDL_SetGPUTextureName (m_ctx->gpu_device, tex, name);
+    return tex;
+  };
+
+  if (!size_matches) {
+    SDL_GPUTextureCreateInfo msaa{};
+    SDL_zero (msaa);
+    msaa.type = SDL_GPU_TEXTURETYPE_2D;
+    msaa.width = width;
+    msaa.height = height;
+    msaa.layer_count_or_depth = 1;
+    msaa.num_levels = 1;
+    msaa.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+    msaa.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+    msaa.sample_count = (sample_count >= 4)   ? SDL_GPU_SAMPLECOUNT_4
+                        : (sample_count >= 2) ? SDL_GPU_SAMPLECOUNT_2
+                                              : SDL_GPU_SAMPLECOUNT_1;
+
+    if (sample_count > 1) {
+      m_msaa_hdr_scene = gpu_texture::adopt (
+          m_ctx->gpu_device, create_hdr_target (msaa, "MSAA HDR Scene"));
+      m_msaa_hdr_bloom = gpu_texture::adopt (
+          m_ctx->gpu_device, create_hdr_target (msaa, "MSAA HDR Bloom"));
+    }
+
+    // Resolved HDR targets must be sampler + color target.
+    SDL_GPUTextureCreateInfo res = msaa;
+    res.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    res.usage
+        = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+
+    m_hdr_scene = gpu_texture::adopt (m_ctx->gpu_device,
+                                      create_hdr_target (res, "HDR Scene"));
+    m_hdr_bloom_src = gpu_texture::adopt (
+        m_ctx->gpu_device, create_hdr_target (res, "HDR Bloom Source"));
+
+    // Half-res bloom ping-pong.
+    SDL_GPUTextureCreateInfo half = res;
+    half.width = std::max (1U, width / 2);
+    half.height = std::max (1U, height / 2);
+
+    m_bloom_a = gpu_texture::adopt (
+        m_ctx->gpu_device, create_hdr_target (half, "Bloom A (half-res)"));
+    m_bloom_b = gpu_texture::adopt (
+        m_ctx->gpu_device, create_hdr_target (half, "Bloom B (half-res)"));
+
+    create_depth_texture (width, height, sample_count);
+
+    m_root_target_w = width;
+    m_root_target_h = height;
+    m_root_sample_count = sample_count;
+    m_current_sample_count = sample_count;
+  }
+
+  // ---- Present texture (size = window) ----
+  if (!present_matches) {
+    if (m_present_tex.texture_data != nullptr) {
+      wsl::gfx::tracy_free_texture (m_present_tex.texture_data);
+      SDL_ReleaseGPUTexture (m_ctx->gpu_device, m_present_tex.texture_data);
+      m_present_tex.texture_data = nullptr;
+    }
+
+    SDL_GPUTextureCreateInfo out{};
+    SDL_zero (out);
+    out.type = SDL_GPU_TEXTURETYPE_2D;
+    out.width = static_cast<uint32_t> (win_w);
+    out.height = static_cast<uint32_t> (win_h);
+    out.layer_count_or_depth = 1;
+    out.num_levels = 1;
+    out.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    out.format = m_swapchain_format;
+    out.usage
+        = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+
+    m_present_tex.texture_data
+        = create_hdr_target (out, "Present Tex (sampleable LDR)");
+    m_present_tex.width = static_cast<uint32_t> (win_w);
+    m_present_tex.height = static_cast<uint32_t> (win_h);
+  }
+
+  // ---- 1x1 zero bloom stand-in (used when bloom is disabled) ----
+  if (!m_zero_bloom) {
+    SDL_GPUTextureCreateInfo z{};
+    SDL_zero (z);
+    z.type = SDL_GPU_TEXTURETYPE_2D;
+    z.width = 1;
+    z.height = 1;
+    z.layer_count_or_depth = 1;
+    z.num_levels = 1;
+    z.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    z.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+    z.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    m_zero_bloom = gpu_texture::adopt (m_ctx->gpu_device,
+                                       create_hdr_target (z, "Zero Bloom"));
+  }
+
+  // Re-size the Tracy frame-image staging buffer to match the new
+  // m_present_tex. The GPU is already idle, so the existing transfer
+  // buffer is safe to release.
+  frame_image_resize (m_present_tex.width, m_present_tex.height);
+}
+
+void
+render_window::begin_3d_pass (SDL_FColor clear_color, bool clear_color_enabled,
+                              bool clear_depth, pixel_rect content_rect,
                               const char *label) const
 {
   ZoneScoped;
-  if ((!m_msaa_hdr_scene) || (!m_msaa_hdr_bloom) || (!m_hdr_scene)
-      || (!m_hdr_bloom_src) || (!m_depth_texture)) {
+  bool const msaa = m_root_sample_count > 1;
+  gpu_texture const *scene_target = msaa ? &m_msaa_hdr_scene : &m_hdr_scene;
+  gpu_texture const *bloom_target = msaa ? &m_msaa_hdr_bloom : &m_hdr_bloom_src;
+  if ((scene_target->get () == nullptr) || (bloom_target->get () == nullptr)
+      || (!m_hdr_scene) || (!m_hdr_bloom_src) || (!m_depth_texture)) {
     wsl::log::gfx ()->warn (
         "begin_3d_pass: null render target texture(s), skipping");
     return;
@@ -407,19 +593,29 @@ render_window::begin_3d_pass (bool clear_color, bool clear_depth,
 
   SDL_GPUColorTargetInfo ct[2]{};
 
-  // Scene HDR
-  ct[0].texture = m_msaa_hdr_scene.get ();
-  ct[0].load_op = clear_color ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
-  ct[0].store_op = SDL_GPU_STOREOP_RESOLVE;
-  ct[0].clear_color = m_scene_clear_color;
-  ct[0].resolve_texture = m_hdr_scene.get ();
+  // Scene HDR (MSAA + resolve, or a single-sample target when AA is off).
+  ct[0].texture = scene_target->get ();
+  ct[0].load_op
+      = clear_color_enabled ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
+  ct[0].clear_color = clear_color;
+  if (msaa) {
+    ct[0].store_op = SDL_GPU_STOREOP_RESOLVE;
+    ct[0].resolve_texture = m_hdr_scene.get ();
+  } else {
+    ct[0].store_op = SDL_GPU_STOREOP_STORE;
+  }
 
-  // Bloom source HDR
-  ct[1].texture = m_msaa_hdr_bloom.get ();
-  ct[1].load_op = clear_color ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
-  ct[1].store_op = SDL_GPU_STOREOP_RESOLVE;
+  // Bloom source HDR.
+  ct[1].texture = bloom_target->get ();
+  ct[1].load_op
+      = clear_color_enabled ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
   ct[1].clear_color = { 0.0F, 0.0F, 0.0F, 1.0F };
-  ct[1].resolve_texture = m_hdr_bloom_src.get ();
+  if (msaa) {
+    ct[1].store_op = SDL_GPU_STOREOP_RESOLVE;
+    ct[1].resolve_texture = m_hdr_bloom_src.get ();
+  } else {
+    ct[1].store_op = SDL_GPU_STOREOP_STORE;
+  }
 
   SDL_GPUDepthStencilTargetInfo ds{};
   SDL_zero (ds);
@@ -430,31 +626,7 @@ render_window::begin_3d_pass (bool clear_color, bool clear_depth,
 
   m_ctx->begin_main_render_pass (ct, 2, &ds);
 
-  // If a viewport is active, set it on the render pass.
-  if (has_active_viewport ()) {
-    auto vp = current_viewport ();
-    int w;
-    int h;
-    SDL_GetWindowSizeInPixels (m_handler, &w, &h);
-    auto pix
-        = vp.to_pixels (static_cast<uint32_t> (w), static_cast<uint32_t> (h));
-
-    SDL_GPUViewport gpu_vp{};
-    gpu_vp.x = static_cast<float> (pix.x);
-    gpu_vp.y = static_cast<float> (pix.y);
-    gpu_vp.w = static_cast<float> (pix.width);
-    gpu_vp.h = static_cast<float> (pix.height);
-    gpu_vp.min_depth = vp.min_depth;
-    gpu_vp.max_depth = vp.max_depth;
-    m_ctx->set_viewport (gpu_vp);
-
-    SDL_Rect scissor{};
-    scissor.x = pix.x;
-    scissor.y = pix.y;
-    scissor.w = pix.width;
-    scissor.h = pix.height;
-    m_ctx->set_scissor_rect (scissor);
-  }
+  apply_content_rect (content_rect);
 }
 
 void
@@ -480,11 +652,18 @@ render_window::end_3d_pass (bool run_postprocess)
 
 void
 render_window::begin_subviewport_pass (const subviewport_target &target,
-                                       bool clear_color, bool clear_depth,
+                                       SDL_FColor clear_color,
+                                       bool clear_color_enabled,
+                                       bool clear_depth,
+                                       pixel_rect content_rect,
                                        const char *label) const
 {
   ZoneScoped;
-  if ((!target.color_msaa) || (!target.color_resolve) || (!target.depth)) {
+  bool const msaa = target.sample_count > 1;
+  bool const has_depth = static_cast<bool> (target.depth);
+
+  if ((!target.color_resolve) || (msaa && !target.color_msaa)
+      || (has_depth && !target.depth)) {
     wsl::log::gfx ()->warn (
         "begin_subviewport_pass: null render target texture(s), skipping");
     return;
@@ -495,32 +674,75 @@ render_window::begin_subviewport_pass (const subviewport_target &target,
 #endif
   SDL_PushGPUDebugGroup (m_ctx->main_cmd, label);
 
+  SDL_GPUTexture *color_msaa
+      = msaa ? target.color_msaa.get () : target.color_resolve.get ();
+  SDL_GPUTexture *bloom_msaa
+      = msaa ? target.bloom_src_msaa.get () : target.bloom_src_resolve.get ();
+
   SDL_GPUColorTargetInfo ct[2]{};
+  ct[0].texture = color_msaa;
+  ct[0].load_op
+      = clear_color_enabled ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
+  ct[0].clear_color = clear_color;
+  if (msaa) {
+    ct[0].store_op = SDL_GPU_STOREOP_RESOLVE;
+    ct[0].resolve_texture = target.color_resolve.get ();
+  } else {
+    ct[0].store_op = SDL_GPU_STOREOP_STORE;
+  }
 
-  ct[0].texture = target.color_msaa.get ();
-  ct[0].load_op = clear_color ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
-  ct[0].store_op = SDL_GPU_STOREOP_RESOLVE;
-  ct[0].clear_color = m_scene_clear_color;
-  ct[0].resolve_texture = target.color_resolve.get ();
+  uint32_t color_target_count = 1;
 
-  ct[1].texture = target.bloom_msaa.get ();
-  ct[1].load_op = clear_color ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
-  ct[1].store_op = SDL_GPU_STOREOP_RESOLVE;
-  ct[1].clear_color = { 0.0F, 0.0F, 0.0F, 1.0F };
-  ct[1].resolve_texture = target.bloom_resolve.get ();
+  // 3D subviewports render through the same two-MRT pipeline as the root,
+  // so the bloom-source target is part of the pass format. 2D subviewports
+  // use the single-target sprite pipeline.
+  if (!target.is_2d && bloom_msaa != nullptr) {
+    color_target_count = 2;
+    ct[1].texture = bloom_msaa;
+    ct[1].load_op
+        = clear_color_enabled ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
+    ct[1].clear_color = { 0.0F, 0.0F, 0.0F, 1.0F };
+    if (msaa) {
+      ct[1].store_op = SDL_GPU_STOREOP_RESOLVE;
+      ct[1].resolve_texture = target.bloom_src_resolve.get ();
+    } else {
+      ct[1].store_op = SDL_GPU_STOREOP_STORE;
+    }
+  }
 
   SDL_GPUDepthStencilTargetInfo ds{};
   SDL_zero (ds);
-  ds.texture = target.depth.get ();
-  ds.clear_depth = 1.0F;
-  ds.load_op = clear_depth ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
-  ds.store_op = SDL_GPU_STOREOP_STORE;
+  if (has_depth) {
+    ds.texture = target.depth.get ();
+    ds.clear_depth = 1.0F;
+    ds.load_op = clear_depth ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
+    ds.store_op = SDL_GPU_STOREOP_STORE;
+  }
 
-  m_ctx->begin_main_render_pass (ct, 2, &ds);
+  m_ctx->begin_main_render_pass (ct, color_target_count,
+                                 has_depth ? &ds : nullptr);
 
-  // Full target size viewport
-  m_ctx->reset_viewport (target.width, target.height);
-  m_ctx->reset_scissor_rect (target.width, target.height);
+  // Full target size viewport unless a content rect was supplied.
+  pixel_rect rect = content_rect;
+  if (rect.empty ()) {
+    rect = pixel_rect{ 0, 0, static_cast<int> (target.width),
+                       static_cast<int> (target.height) };
+  }
+  SDL_GPUViewport gpu_vp{};
+  gpu_vp.x = static_cast<float> (rect.x);
+  gpu_vp.y = static_cast<float> (rect.y);
+  gpu_vp.w = static_cast<float> (rect.width);
+  gpu_vp.h = static_cast<float> (rect.height);
+  gpu_vp.min_depth = 0.0F;
+  gpu_vp.max_depth = 1.0F;
+  m_ctx->set_viewport (gpu_vp);
+
+  SDL_Rect scissor{};
+  scissor.x = rect.x;
+  scissor.y = rect.y;
+  scissor.w = rect.width;
+  scissor.h = rect.height;
+  m_ctx->set_scissor_rect (scissor);
 }
 
 void
@@ -559,71 +781,68 @@ render_window::end_ui_pass () const
 }
 
 void
-render_window::push_viewport (const gfx::viewport &vp)
+render_window::apply_content_rect (const pixel_rect &rect) const
 {
-  m_viewport_stack.push_back (vp);
-}
-
-void
-render_window::pop_viewport ()
-{
-  if (!m_viewport_stack.empty ()) {
-    m_viewport_stack.pop_back ();
+  if (rect.empty ()) {
+    m_ctx->reset_viewport (m_root_target_w, m_root_target_h);
+    m_ctx->reset_scissor_rect (m_root_target_w, m_root_target_h);
+    return;
   }
-}
-
-void
-render_window::reset_viewports ()
-{
-  m_viewport_stack.clear ();
-}
-
-bool
-render_window::has_active_viewport () const
-{
-  return !m_viewport_stack.empty ();
-}
-
-size_t
-render_window::viewport_count () const
-{
-  return m_viewport_stack.size ();
-}
-
-gfx::viewport
-render_window::current_viewport () const
-{
-  if (!m_viewport_stack.empty ()) {
-    return m_viewport_stack.back ();
-  }
-  // Default full-screen viewport.
-  return gfx::viewport{};
-}
-
-void
-render_window::apply_viewport (const gfx::viewport &vp) const
-{
-  int w;
-  int h;
-  SDL_GetWindowSizeInPixels (m_handler, &w, &h);
-  auto pix
-      = vp.to_pixels (static_cast<uint32_t> (w), static_cast<uint32_t> (h));
 
   SDL_GPUViewport gpu_vp{};
-  gpu_vp.x = static_cast<float> (pix.x);
-  gpu_vp.y = static_cast<float> (pix.y);
-  gpu_vp.w = static_cast<float> (pix.width);
-  gpu_vp.h = static_cast<float> (pix.height);
-  gpu_vp.min_depth = vp.min_depth;
-  gpu_vp.max_depth = vp.max_depth;
+  gpu_vp.x = static_cast<float> (rect.x);
+  gpu_vp.y = static_cast<float> (rect.y);
+  gpu_vp.w = static_cast<float> (rect.width);
+  gpu_vp.h = static_cast<float> (rect.height);
+  gpu_vp.min_depth = 0.0F;
+  gpu_vp.max_depth = 1.0F;
   m_ctx->set_viewport (gpu_vp);
 
   SDL_Rect scissor{};
-  scissor.x = pix.x;
-  scissor.y = pix.y;
-  scissor.w = pix.width;
-  scissor.h = pix.height;
+  scissor.x = rect.x;
+  scissor.y = rect.y;
+  scissor.w = rect.width;
+  scissor.h = rect.height;
   m_ctx->set_scissor_rect (scissor);
+}
+
+void
+render_window::apply_window_settings (const rsc::window_settings &settings)
+{
+  if (m_handler == nullptr) {
+    return;
+  }
+
+  SDL_SetWindowResizable (m_handler, settings.resizable);
+  SDL_SetWindowMinimumSize (m_handler, settings.min_width, settings.min_height);
+  SDL_SetWindowMaximumSize (m_handler,
+                            settings.max_width > 0 ? settings.max_width : 0,
+                            settings.max_height > 0 ? settings.max_height : 0);
+
+  switch (settings.mode) {
+  case rsc::window_mode::borderless_fullscreen:
+    SDL_SetWindowBordered (m_handler, false);
+    SDL_SetWindowFullscreen (m_handler, true);
+    SDL_SetWindowFullscreenMode (m_handler, nullptr);
+    break;
+  case rsc::window_mode::fullscreen:
+    SDL_SetWindowBordered (m_handler, true);
+    SDL_SetWindowFullscreen (m_handler, true);
+    break;
+  case rsc::window_mode::minimized:
+    SDL_MinimizeWindow (m_handler);
+    break;
+  case rsc::window_mode::windowed:
+  default:
+    SDL_SetWindowFullscreen (m_handler, false);
+    SDL_SetWindowBordered (m_handler, true);
+    SDL_SetWindowSize (m_handler, settings.width, settings.height);
+    SDL_SetWindowPosition (m_handler, SDL_WINDOWPOS_CENTERED,
+                           SDL_WINDOWPOS_CENTERED);
+    break;
+  }
+
+  on_resize ();
 }
 
 void
@@ -722,116 +941,16 @@ render_window::on_resize ()
     return;
   }
 
-  wsl::log::gfx ()->debug ("Resize: {}x{}", w, h);
+  // Root scene targets keep their resolved size (viewport scaling renders
+  // into a fixed-size target); the presenter/present texture tracks the
+  // window. Before the first resolve the window size seeds the target.
+  uint32_t const root_w
+      = m_root_target_w > 0 ? m_root_target_w : static_cast<uint32_t> (w);
+  uint32_t const root_h
+      = m_root_target_h > 0 ? m_root_target_h : static_cast<uint32_t> (h);
+  int const samples = m_root_sample_count > 0 ? m_root_sample_count : 1;
 
-  SDL_WaitForGPUIdle (m_ctx->gpu_device);
-
-  // Depth
-  create_depth_texture ();
-
-  // Destroy HDR/bloom targets
-  destroy_texture (m_msaa_hdr_scene);
-  destroy_texture (m_msaa_hdr_bloom);
-  destroy_texture (m_hdr_scene);
-  destroy_texture (m_hdr_bloom_src);
-  destroy_texture (m_bloom_a);
-  destroy_texture (m_bloom_b);
-  // m_present_tex.texture_data is a raw pointer; free manually with
-  // Tracy bookkeeping so the wsl.gfx.textures pool stays consistent.
-  if (m_present_tex.texture_data != nullptr) {
-    wsl::gfx::tracy_free_texture (m_present_tex.texture_data);
-    SDL_ReleaseGPUTexture (m_ctx->gpu_device, m_present_tex.texture_data);
-    m_present_tex.texture_data = nullptr;
-  }
-
-  // MSAA HDR targets (two MRT textures)
-  SDL_GPUTextureCreateInfo msaa{};
-  SDL_zero (msaa);
-  msaa.type = SDL_GPU_TEXTURETYPE_2D;
-  msaa.width = (uint32_t)w;
-  msaa.height = (uint32_t)h;
-  msaa.layer_count_or_depth = 1;
-  msaa.num_levels = 1;
-  msaa.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
-  msaa.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
-  msaa.sample_count = SDL_GPU_SAMPLECOUNT_4;
-
-  auto create_hdr_target = [&] (const SDL_GPUTextureCreateInfo &ci) {
-    SDL_GPUTexture *tex = SDL_CreateGPUTexture (m_ctx->gpu_device, &ci);
-    if (tex == nullptr) {
-      wsl::log::gfx ()->error ("Failed to create HDR render target ({}x{}): {}",
-                               ci.width, ci.height, SDL_GetError ());
-      return tex;
-    }
-    wsl::gfx::tracy_alloc_texture (tex, ci);
-    return tex;
-  };
-
-  m_msaa_hdr_scene
-      = gpu_texture::adopt (m_ctx->gpu_device, create_hdr_target (msaa));
-  m_msaa_hdr_bloom
-      = gpu_texture::adopt (m_ctx->gpu_device, create_hdr_target (msaa));
-  if (m_msaa_hdr_scene)
-    SDL_SetGPUTextureName (m_ctx->gpu_device, m_msaa_hdr_scene.get (),
-                           "MSAA HDR Scene (4x)");
-  if (m_msaa_hdr_bloom)
-    SDL_SetGPUTextureName (m_ctx->gpu_device, m_msaa_hdr_bloom.get (),
-                           "MSAA HDR Bloom (4x)");
-
-  // Resolved HDR targets must be sampler + color target
-  SDL_GPUTextureCreateInfo res = msaa;
-  res.sample_count = SDL_GPU_SAMPLECOUNT_1;
-  res.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
-
-  m_hdr_scene = gpu_texture::adopt (m_ctx->gpu_device, create_hdr_target (res));
-  m_hdr_bloom_src
-      = gpu_texture::adopt (m_ctx->gpu_device, create_hdr_target (res));
-  if (m_hdr_scene)
-    SDL_SetGPUTextureName (m_ctx->gpu_device, m_hdr_scene.get (), "HDR Scene");
-  if (m_hdr_bloom_src)
-    SDL_SetGPUTextureName (m_ctx->gpu_device, m_hdr_bloom_src.get (),
-                           "HDR Bloom Source");
-
-  // Half-res bloom ping-pong
-  SDL_GPUTextureCreateInfo half = res;
-  half.width = (uint32_t)std::max (1, w / 2);
-  half.height = (uint32_t)std::max (1, h / 2);
-
-  m_bloom_a = gpu_texture::adopt (m_ctx->gpu_device, create_hdr_target (half));
-  m_bloom_b = gpu_texture::adopt (m_ctx->gpu_device, create_hdr_target (half));
-  if (m_bloom_a)
-    SDL_SetGPUTextureName (m_ctx->gpu_device, m_bloom_a.get (),
-                           "Bloom A (half-res)");
-  if (m_bloom_b)
-    SDL_SetGPUTextureName (m_ctx->gpu_device, m_bloom_b.get (),
-                           "Bloom B (half-res)");
-
-  // Create LDR output texture (same format as m_swapchain) so UI can sample it
-  SDL_GPUTextureCreateInfo out{};
-  SDL_zero (out);
-  out.type = SDL_GPU_TEXTURETYPE_2D;
-  out.width = (uint32_t)w;
-  out.height = (uint32_t)h;
-  out.layer_count_or_depth = 1;
-  out.num_levels = 1;
-  out.sample_count = SDL_GPU_SAMPLECOUNT_1;
-  out.format = m_swapchain_format;
-  out.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
-
-  m_present_tex.texture_data = create_hdr_target (out);
-  if (m_present_tex.texture_data != nullptr)
-    SDL_SetGPUTextureName (m_ctx->gpu_device, m_present_tex.texture_data,
-                           "Present Tex (sampleable LDR)");
-  m_present_tex.width = (uint32_t)w;
-  m_present_tex.height = (uint32_t)h;
-
-  // Re-size the Tracy frame-image staging buffer to match the new
-  // m_present_tex. The GPU is already idle (SDL_WaitForGPUIdle at the
-  // top of on_resize), so the existing transfer buffer is safe to
-  // release. frame_image_resize() is a no-op if the dimensions
-  // haven't changed, so repeated calls during a drag-resize are
-  // cheap.
-  frame_image_resize (m_present_tex.width, m_present_tex.height);
+  ensure_root_targets (root_w, root_h, samples);
 }
 
 void
@@ -869,6 +988,20 @@ render_window::postprocess_hdr_bloom ()
   int hh;
   SDL_GetWindowSizeInPixels (m_handler, &ww, &hh);
 
+  // Root scene targets may be smaller/larger than the window (viewport
+  // scaling). Bloom texel sizes must use the render-target size.
+  uint32_t const rw
+      = m_root_target_w > 0 ? m_root_target_w : static_cast<uint32_t> (ww);
+  uint32_t const rh
+      = m_root_target_h > 0 ? m_root_target_h : static_cast<uint32_t> (hh);
+
+  // Pixel rect where the root viewport is presented inside the window
+  // (letterbox/pillarbox bars are cleared black). Empty = full window.
+  pixel_rect present = m_present_rect;
+  if (present.empty ()) {
+    present = pixel_rect{ 0, 0, ww, hh };
+  }
+
   // ---------- (1) Downsample bloom_src -> m_bloom_a ----------
   {
     ZoneScopedN ("postprocess::downsample");
@@ -894,8 +1027,8 @@ render_window::postprocess_hdr_bloom ()
         float texel[2];
         float pad[2];
       } p{};
-      p.texel[0] = 1.0F / float (ww);
-      p.texel[1] = 1.0F / float (hh);
+      p.texel[0] = 1.0F / float (rw);
+      p.texel[1] = 1.0F / float (rh);
 
       SDL_PushGPUFragmentUniformData (m_ctx->main_cmd, 0, &p, sizeof (p));
 
@@ -912,8 +1045,8 @@ render_window::postprocess_hdr_bloom ()
   }
 
   // bloom texel size (half res)
-  uint32_t const bw = std::max (1U, (uint32_t)ww / 2);
-  uint32_t const bh = std::max (1U, (uint32_t)hh / 2);
+  uint32_t const bw = std::max (1U, rw / 2);
+  uint32_t const bh = std::max (1U, rh / 2);
   float const bloom_texel[2] = { 1.0F / float (bw), 1.0F / float (bh) };
 
   // ---------- (2) Blur H: m_bloom_a -> m_bloom_b ----------
@@ -1028,6 +1161,19 @@ render_window::postprocess_hdr_bloom ()
     if (pass != nullptr) {
       SDL_BindGPUGraphicsPipeline (pass, m_pipe_composite.get ());
 
+      // Letterbox/pillarbox: present the root viewport into its resolved
+      // output rect; the rest of the target keeps the black clear.
+      SDL_GPUViewport gpu_vp{};
+      gpu_vp.x = static_cast<float> (present.x);
+      gpu_vp.y = static_cast<float> (present.y);
+      gpu_vp.w = static_cast<float> (present.width);
+      gpu_vp.h = static_cast<float> (present.height);
+      gpu_vp.min_depth = 0.0F;
+      gpu_vp.max_depth = 1.0F;
+      SDL_SetGPUViewport (pass, &gpu_vp);
+      SDL_Rect scissor{ present.x, present.y, present.width, present.height };
+      SDL_SetGPUScissor (pass, &scissor);
+
       struct alignas (16) comp
       {
         float m_exposure;
@@ -1078,6 +1224,17 @@ render_window::postprocess_hdr_bloom ()
     if (pass != nullptr) {
       SDL_BindGPUGraphicsPipeline (pass, m_pipe_composite.get ());
 
+      SDL_GPUViewport gpu_vp{};
+      gpu_vp.x = static_cast<float> (present.x);
+      gpu_vp.y = static_cast<float> (present.y);
+      gpu_vp.w = static_cast<float> (present.width);
+      gpu_vp.h = static_cast<float> (present.height);
+      gpu_vp.min_depth = 0.0F;
+      gpu_vp.max_depth = 1.0F;
+      SDL_SetGPUViewport (pass, &gpu_vp);
+      SDL_Rect scissor{ present.x, present.y, present.width, present.height };
+      SDL_SetGPUScissor (pass, &scissor);
+
       struct alignas (16) comp
       {
         float m_exposure;
@@ -1114,6 +1271,164 @@ render_window::postprocess_hdr_bloom ()
   // frame (postprocess + UI). The fence / wait / FrameImage call
   // happens in frame_image_submit() after end_cmd.
   frame_image_issue_copy ();
+}
+
+void
+render_window::postprocess_subviewport (subviewport_target &target,
+                                        float exposure, float bloom_intensity)
+{
+  ZoneScoped;
+  if (!target.ldr_color || !target.color_resolve) {
+    return;
+  }
+
+  uint32_t const rw = target.width;
+  uint32_t const rh = target.height;
+  if (rw == 0 || rh == 0) {
+    return;
+  }
+
+  ensure_linear_sampler ();
+  if ((!m_pipe_downsample) || (!m_pipe_blur) || (!m_pipe_composite)) {
+    return;
+  }
+
+  SDL_PushGPUDebugGroup (m_ctx->main_cmd, "Subviewport Postprocess");
+
+  SDL_GPUTexture *bloom_source
+      = target.bloom_a ? target.bloom_a.get () : m_zero_bloom.get ();
+
+  if (target.bloom_enabled && target.bloom_src_resolve && target.bloom_a
+      && target.bloom_b) {
+    // ---------- (1) Downsample bloom source -> bloom_a ----------
+    {
+      ZoneScopedN ("subpost::downsample");
+      SDL_PushGPUDebugGroup (m_ctx->main_cmd, "Bloom Downsample");
+      SDL_GPUColorTargetInfo ct{};
+      SDL_zero (ct);
+      ct.texture = target.bloom_a.get ();
+      ct.load_op = SDL_GPU_LOADOP_CLEAR;
+      ct.store_op = SDL_GPU_STOREOP_STORE;
+      ct.clear_color = { 0, 0, 0, 1 };
+
+      SDL_GPURenderPass *pass
+          = SDL_BeginGPURenderPass (m_ctx->main_cmd, &ct, 1, nullptr);
+      if (pass != nullptr) {
+        SDL_BindGPUGraphicsPipeline (pass, m_pipe_downsample.get ());
+
+        struct alignas (16) down
+        {
+          float texel[2];
+          float pad[2];
+        } p{};
+        p.texel[0] = 1.0F / float (rw);
+        p.texel[1] = 1.0F / float (rh);
+        SDL_PushGPUFragmentUniformData (m_ctx->main_cmd, 0, &p, sizeof (p));
+
+        SDL_GPUTextureSamplerBinding b{};
+        SDL_zero (b);
+        b.texture = target.bloom_src_resolve.get ();
+        b.sampler = m_linear_sampler.get ();
+        SDL_BindGPUFragmentSamplers (pass, 0, &b, 1);
+
+        SDL_DrawGPUPrimitives (pass, 3, 1, 0, 0);
+        SDL_EndGPURenderPass (pass);
+      }
+      SDL_PopGPUDebugGroup (m_ctx->main_cmd);
+    }
+
+    uint32_t const bw = std::max (1U, rw / 2);
+    uint32_t const bh = std::max (1U, rh / 2);
+    float const bloom_texel[2] = { 1.0F / float (bw), 1.0F / float (bh) };
+
+    auto blur_pass = [&] (SDL_GPUTexture *dst, SDL_GPUTexture *src, float dx,
+                          float dy) {
+      SDL_GPUColorTargetInfo ct{};
+      SDL_zero (ct);
+      ct.texture = dst;
+      ct.load_op = SDL_GPU_LOADOP_CLEAR;
+      ct.store_op = SDL_GPU_STOREOP_STORE;
+      ct.clear_color = { 0, 0, 0, 1 };
+
+      SDL_GPURenderPass *pass
+          = SDL_BeginGPURenderPass (m_ctx->main_cmd, &ct, 1, nullptr);
+      if (pass != nullptr) {
+        SDL_BindGPUGraphicsPipeline (pass, m_pipe_blur.get ());
+
+        struct alignas (16) blur
+        {
+          float texel[2];
+          float dir[2];
+        } p{};
+        p.texel[0] = bloom_texel[0];
+        p.texel[1] = bloom_texel[1];
+        p.dir[0] = dx;
+        p.dir[1] = dy;
+        SDL_PushGPUFragmentUniformData (m_ctx->main_cmd, 0, &p, sizeof (p));
+
+        SDL_GPUTextureSamplerBinding b{};
+        SDL_zero (b);
+        b.texture = src;
+        b.sampler = m_linear_sampler.get ();
+        SDL_BindGPUFragmentSamplers (pass, 0, &b, 1);
+
+        SDL_DrawGPUPrimitives (pass, 3, 1, 0, 0);
+        SDL_EndGPURenderPass (pass);
+      }
+    };
+
+    SDL_PushGPUDebugGroup (m_ctx->main_cmd, "Bloom Blur H");
+    blur_pass (target.bloom_b.get (), target.bloom_a.get (), 1.0F, 0.0F);
+    SDL_PopGPUDebugGroup (m_ctx->main_cmd);
+
+    SDL_PushGPUDebugGroup (m_ctx->main_cmd, "Bloom Blur V");
+    blur_pass (target.bloom_a.get (), target.bloom_b.get (), 0.0F, 1.0F);
+    SDL_PopGPUDebugGroup (m_ctx->main_cmd);
+
+    bloom_source = target.bloom_a.get ();
+  }
+
+  // ---------- (2) Composite + tonemap -> LDR output ----------
+  {
+    ZoneScopedN ("subpost::composite");
+    SDL_PushGPUDebugGroup (m_ctx->main_cmd, "Tonemap Subviewport");
+    SDL_GPUColorTargetInfo ct{};
+    SDL_zero (ct);
+    ct.texture = target.ldr_color.get ();
+    ct.load_op = SDL_GPU_LOADOP_CLEAR;
+    ct.store_op = SDL_GPU_STOREOP_STORE;
+    ct.clear_color = { 0, 0, 0, 1 };
+
+    SDL_GPURenderPass *pass
+        = SDL_BeginGPURenderPass (m_ctx->main_cmd, &ct, 1, nullptr);
+    if (pass != nullptr) {
+      SDL_BindGPUGraphicsPipeline (pass, m_pipe_composite.get ());
+
+      struct alignas (16) comp
+      {
+        float m_exposure;
+        float bloom_int;
+        float pad[2];
+      } c{};
+      c.m_exposure = exposure;
+      c.bloom_int = bloom_intensity;
+      SDL_PushGPUFragmentUniformData (m_ctx->main_cmd, 0, &c, sizeof (c));
+
+      SDL_GPUTextureSamplerBinding b[2]{};
+      SDL_zero (b);
+      b[0].texture = target.color_resolve.get ();
+      b[0].sampler = m_linear_sampler.get ();
+      b[1].texture = bloom_source;
+      b[1].sampler = m_linear_sampler.get ();
+      SDL_BindGPUFragmentSamplers (pass, 0, b, 2);
+
+      SDL_DrawGPUPrimitives (pass, 3, 1, 0, 0);
+      SDL_EndGPURenderPass (pass);
+    }
+    SDL_PopGPUDebugGroup (m_ctx->main_cmd);
+  }
+
+  SDL_PopGPUDebugGroup (m_ctx->main_cmd);
 }
 
 // ---------------------------------------------------------------------

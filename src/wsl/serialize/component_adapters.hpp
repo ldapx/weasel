@@ -648,14 +648,12 @@ struct AnimatorHelper
 struct SubviewportCameraUIHelper
 {
   std::uint32_t value = 0xFFFFFFFF;
-  bool filter_2d = false;
 
   static SubviewportCameraUIHelper
   from_class (const comp::subviewport_camera_ui &c)
   {
     return { (c.value == entt::null) ? serialized_null_entity
-                                     : static_cast<std::uint32_t> (c.value),
-             c.filter_2d };
+                                     : static_cast<std::uint32_t> (c.value) };
   }
 
   comp::subviewport_camera_ui
@@ -664,8 +662,166 @@ struct SubviewportCameraUIHelper
     comp::subviewport_camera_ui c;
     c.value = (value == serialized_null_entity) ? entt::null
                                                 : entt::entity{ value };
-    c.filter_2d = filter_2d;
     return c;
+  }
+};
+
+// =============================================================================
+// viewport_environment (per-viewport environment, D4)
+// =============================================================================
+struct ViewportEnvironmentHelper
+{
+  bool skybox_use_global = true;
+  rsc::cubemap_id skybox{};
+  bool skybox_rotation_use_global = true;
+  math::quatf skybox_rotation{ 0, 0, 0, 1 };
+  bool ambient_use_global = true;
+  math::vec3f ambient_color{ 1, 1, 1 };
+  float ambient_intensity = 0.01F;
+  bool ibl_use_global = true;
+  float ibl_intensity = 1.0F;
+  bool exposure_use_global = true;
+  float exposure = 1.0F;
+  bool bloom_use_global = true;
+  bool bloom_enabled = false;
+  float bloom_threshold = 1.0F;
+  float bloom_knee = 0.5F;
+  float bloom_intensity = 1.0F;
+  bool ssao_use_global = true;
+  bool ssao_enabled = true;
+  float ssao_radius = 0.6F;
+  float ssao_bias = 0.025F;
+  float ssao_power = 1.25F;
+  float ssao_intensity = 1.0F;
+  bool clear_color_enabled = true;
+  bool clear_color_use_global = true;
+  math::vec4f clear_color{ 0, 0, 0, 1 };
+  bool clear_depth = true;
+
+  static ViewportEnvironmentHelper
+  from_class (const comp::viewport_environment &e)
+  {
+    ViewportEnvironmentHelper h;
+    h.skybox_use_global = e.skybox_use_global;
+    h.skybox = e.skybox;
+    h.skybox_rotation_use_global = e.skybox_rotation_use_global;
+    h.skybox_rotation = e.skybox_rotation;
+    h.ambient_use_global = e.ambient_use_global;
+    h.ambient_color = e.ambient_color;
+    h.ambient_intensity = e.ambient_intensity;
+    h.ibl_use_global = e.ibl_use_global;
+    h.ibl_intensity = e.ibl_intensity;
+    h.exposure_use_global = e.exposure_use_global;
+    h.exposure = e.exposure;
+    h.bloom_use_global = e.bloom_use_global;
+    h.bloom_enabled = e.bloom_enabled;
+    h.bloom_threshold = e.bloom_threshold;
+    h.bloom_knee = e.bloom_knee;
+    h.bloom_intensity = e.bloom_intensity;
+    h.ssao_use_global = e.ssao_use_global;
+    h.ssao_enabled = e.ssao_enabled;
+    h.ssao_radius = e.ssao_radius;
+    h.ssao_bias = e.ssao_bias;
+    h.ssao_power = e.ssao_power;
+    h.ssao_intensity = e.ssao_intensity;
+    h.clear_color_enabled = e.clear_color_enabled;
+    h.clear_color_use_global = e.clear_color_use_global;
+    h.clear_color = e.clear_color;
+    h.clear_depth = e.clear_depth;
+    return h;
+  }
+
+  comp::viewport_environment
+  to_class () const
+  {
+    comp::viewport_environment e;
+    e.skybox_use_global = skybox_use_global;
+    e.skybox = skybox;
+    e.skybox_rotation_use_global = skybox_rotation_use_global;
+    e.skybox_rotation = skybox_rotation;
+    e.ambient_use_global = ambient_use_global;
+    e.ambient_color = ambient_color;
+    e.ambient_intensity = ambient_intensity;
+    e.ibl_use_global = ibl_use_global;
+    e.ibl_intensity = ibl_intensity;
+    e.exposure_use_global = exposure_use_global;
+    e.exposure = exposure;
+    e.bloom_use_global = bloom_use_global;
+    e.bloom_enabled = bloom_enabled;
+    e.bloom_threshold = bloom_threshold;
+    e.bloom_knee = bloom_knee;
+    e.bloom_intensity = bloom_intensity;
+    e.ssao_use_global = ssao_use_global;
+    e.ssao_enabled = ssao_enabled;
+    e.ssao_radius = ssao_radius;
+    e.ssao_bias = ssao_bias;
+    e.ssao_power = ssao_power;
+    e.ssao_intensity = ssao_intensity;
+    e.clear_color_enabled = clear_color_enabled;
+    e.clear_color_use_global = clear_color_use_global;
+    e.clear_color = clear_color;
+    e.clear_depth = clear_depth;
+    return e;
+  }
+};
+
+// =============================================================================
+// viewport_settings (shared root/sub settings, R1)
+// =============================================================================
+struct ViewportSettingsHelper
+{
+  int scale_mode = 2;    // viewport
+  int aspect_policy = 0; // ignore
+  int filter = 1;        // linear
+  bool filter_use_global = true;
+  int msaa = 1;
+  bool msaa_use_global = true;
+  float render_scale = 1.0F;
+  bool render_scale_use_global = true;
+  ViewportEnvironmentHelper env;
+  int update_mode = 2; // when_visible
+  int clear_mode = 0;  // always
+  bool shadow_caster = true;
+  std::uint32_t cull_mask = 0xFFFFFFFFU;
+
+  static ViewportSettingsHelper
+  from_class (const comp::viewport_settings &s)
+  {
+    ViewportSettingsHelper h;
+    h.scale_mode = static_cast<int> (s.scale_mode);
+    h.aspect_policy = static_cast<int> (s.aspect_policy);
+    h.filter = static_cast<int> (s.filter);
+    h.filter_use_global = s.filter_use_global;
+    h.msaa = s.msaa;
+    h.msaa_use_global = s.msaa_use_global;
+    h.render_scale = s.render_scale;
+    h.render_scale_use_global = s.render_scale_use_global;
+    h.env = ViewportEnvironmentHelper::from_class (s.env);
+    h.update_mode = static_cast<int> (s.update_mode);
+    h.clear_mode = static_cast<int> (s.clear_mode);
+    h.shadow_caster = s.shadow_caster;
+    h.cull_mask = s.cull_mask;
+    return h;
+  }
+
+  comp::viewport_settings
+  to_class () const
+  {
+    comp::viewport_settings s;
+    s.scale_mode = static_cast<comp::viewport_scale_mode> (scale_mode);
+    s.aspect_policy = static_cast<comp::viewport_aspect_policy> (aspect_policy);
+    s.filter = static_cast<comp::viewport_filter> (filter);
+    s.filter_use_global = filter_use_global;
+    s.msaa = msaa;
+    s.msaa_use_global = msaa_use_global;
+    s.render_scale = render_scale;
+    s.render_scale_use_global = render_scale_use_global;
+    s.env = env.to_class ();
+    s.update_mode = static_cast<comp::viewport_update_mode> (update_mode);
+    s.clear_mode = static_cast<comp::viewport_clear_mode> (clear_mode);
+    s.shadow_caster = shadow_caster;
+    s.cull_mask = cull_mask;
+    return s;
   }
 };
 
@@ -674,67 +830,42 @@ struct SubviewportCameraUIHelper
 // =============================================================================
 struct SubviewportHelper
 {
-  float x = 0.0F;
-  float y = 0.0F;
-  float width = 1.0F;
-  float height = 1.0F;
-  bool clear_color = false;
-  bool clear_depth = false;
-  float clear_r = 0.0F;
-  float clear_g = 0.0F;
-  float clear_b = 0.0F;
-  float clear_a = 1.0F;
-  SubviewportCameraUIHelper camera_2d;
-  SubviewportCameraUIHelper camera_3d;
+  math::vec2f size{ 320.0F, 180.0F };
   math::vec2f world_quad_size{ 1.0F, 1.0F };
-  math::vec2f container_size{ 320.0F, 180.0F };
-  math::vec2f container_position{ 0.0F, 0.0F };
   math::vec2f virtual_size{ 1920.0F, 1080.0F };
-  bool render_2d_only = false;
+  int display_order = 0;
+  bool input_routing = true;
+  bool hdr = false;
+  SubviewportCameraUIHelper camera;
+  ViewportSettingsHelper settings;
 
   static SubviewportHelper
   from_class (const comp::subviewport &s)
   {
-    return { s.x,
-             s.y,
-             s.width,
-             s.height,
-             s.clear_color,
-             s.clear_depth,
-             s.clear_r,
-             s.clear_g,
-             s.clear_b,
-             s.clear_a,
-             SubviewportCameraUIHelper::from_class (s.camera_2d),
-             SubviewportCameraUIHelper::from_class (s.camera_3d),
-             s.world_quad_size,
-             s.container_size,
-             s.container_position,
-             s.virtual_size,
-             s.render_2d_only };
+    SubviewportHelper h;
+    h.size = s.size;
+    h.world_quad_size = s.world_quad_size;
+    h.virtual_size = s.virtual_size;
+    h.display_order = s.display_order;
+    h.input_routing = s.input_routing;
+    h.hdr = s.hdr;
+    h.camera = SubviewportCameraUIHelper::from_class (s.camera);
+    h.settings = ViewportSettingsHelper::from_class (s.settings);
+    return h;
   }
 
   comp::subviewport
   to_class () const
   {
     comp::subviewport s;
-    s.x = x;
-    s.y = y;
-    s.width = width;
-    s.height = height;
-    s.clear_color = clear_color;
-    s.clear_depth = clear_depth;
-    s.clear_r = clear_r;
-    s.clear_g = clear_g;
-    s.clear_b = clear_b;
-    s.clear_a = clear_a;
-    s.camera_2d = camera_2d.to_class ();
-    s.camera_3d = camera_3d.to_class ();
+    s.size = size;
     s.world_quad_size = world_quad_size;
-    s.container_size = container_size;
-    s.container_position = container_position;
     s.virtual_size = virtual_size;
-    s.render_2d_only = render_2d_only;
+    s.display_order = display_order;
+    s.input_routing = input_routing;
+    s.hdr = hdr;
+    s.camera = camera.to_class ();
+    s.settings = settings.to_class ();
     return s;
   }
 };
@@ -912,7 +1043,7 @@ struct RenderingManagerHelper
   float outline_width = 0.035F;
   float shadow_bias = 0.0025F;
   float shadow_strength = 1.0F;
-  std::vector<gfx::viewport> viewports;
+  ViewportSettingsHelper root_viewport;
   std::uint32_t render_viewport = 0xFFFFFFFF;
   math::vec2f root_viewport_virtual_size{ 1920.0F, 1080.0F };
 
@@ -943,7 +1074,7 @@ struct RenderingManagerHelper
     h.outline_width = r.outline_width;
     h.shadow_bias = r.shadow_bias;
     h.shadow_strength = r.shadow_strength;
-    h.viewports = r.viewports;
+    h.root_viewport = ViewportSettingsHelper::from_class (r.root_viewport);
     h.render_viewport = (r.render_viewport == entt::null)
                             ? serialized_null_entity
                             : static_cast<std::uint32_t> (
@@ -979,7 +1110,7 @@ struct RenderingManagerHelper
     r.outline_width = outline_width;
     r.shadow_bias = shadow_bias;
     r.shadow_strength = shadow_strength;
-    r.viewports = viewports;
+    r.root_viewport = root_viewport.to_class ();
     r.render_viewport = (render_viewport == serialized_null_entity)
                             ? entt::null
                             : entt::entity{ render_viewport };

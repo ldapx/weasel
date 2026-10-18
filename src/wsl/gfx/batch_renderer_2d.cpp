@@ -57,14 +57,16 @@ batch_renderer_2d::build_and_upload ()
     return;
   }
 
-  // Sort by z-index then image
-  std::sort (m_queue.begin (), m_queue.end (),
-             [] (const draw_command &lhs, const draw_command &rhs) {
-               if (lhs.z_index != rhs.z_index) {
-                 return lhs.z_index < rhs.z_index;
-               }
-               return lhs.image.value < rhs.image.value;
-             });
+  // Sort by z-index then image. Stable so equal keys preserve submission
+  // order: viewport overlays are submitted in hierarchy order, which is the
+  // documented tie-break for equal `display_order` (D11).
+  std::stable_sort (m_queue.begin (), m_queue.end (),
+                    [] (const draw_command &lhs, const draw_command &rhs) {
+                      if (lhs.z_index != rhs.z_index) {
+                        return lhs.z_index < rhs.z_index;
+                      }
+                      return lhs.image.value < rhs.image.value;
+                    });
 
   uint32_t window_width;
   uint32_t window_height;
@@ -78,6 +80,7 @@ batch_renderer_2d::build_and_upload ()
   m_vertices.clear ();
 
   SDL_GPUTexture *current_texture = nullptr;
+  bool current_nearest = false;
   uint32_t batch_start = 0;
 
   for (const auto &cmd : m_queue) {
@@ -89,12 +92,15 @@ batch_renderer_2d::build_and_upload ()
       tex = img_handle ? img_handle->texture.get () : nullptr;
     }
 
-    if (tex != current_texture || m_vertices.size () + 6 > max_vertices) {
+    if (tex != current_texture || cmd.nearest_filter != current_nearest
+        || m_vertices.size () + 6 > max_vertices) {
       if (current_texture != nullptr || !m_vertices.empty ()) {
         m_batches.push_back ({ current_texture, batch_start,
-                               (uint32_t)m_vertices.size () - batch_start });
+                               (uint32_t)m_vertices.size () - batch_start,
+                               current_nearest });
       }
       current_texture = tex;
+      current_nearest = cmd.nearest_filter;
       batch_start = (uint32_t)m_vertices.size ();
 
       if (m_vertices.size () + 6 > max_vertices) {
@@ -193,9 +199,11 @@ batch_renderer_2d::draw ()
 
   for (const auto &batch : m_batches) {
     SDL_GPUTexture *tex
-        = batch.texture ? batch.texture : m_window->hdr_scene().get ();
+        = batch.texture ? batch.texture : m_window->hdr_scene ().get ();
     if (tex) {
-      SDL_GPUTextureSamplerBinding tex_binding{ tex, m_sampler.get () };
+      SDL_GPUSampler *sampler
+          = batch.nearest_filter ? m_nearest_sampler.get () : m_sampler.get ();
+      SDL_GPUTextureSamplerBinding tex_binding{ tex, sampler };
       SDL_BindGPUFragmentSamplers (pass, 0, &tex_binding, 1);
     }
     SDL_DrawGPUPrimitives (pass, batch.vertex_count, 1, batch.first_vertex, 0);
@@ -294,6 +302,14 @@ batch_renderer_2d::create_pipeline ()
   sinfo.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
   sinfo.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
   m_sampler = gpu_sampler (m_ctx->gpu_device, sinfo);
+
+  SDL_GPUSamplerCreateInfo ninfo{};
+  ninfo.min_filter = SDL_GPU_FILTER_NEAREST;
+  ninfo.mag_filter = SDL_GPU_FILTER_NEAREST;
+  ninfo.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+  ninfo.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+  ninfo.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+  m_nearest_sampler = gpu_sampler (m_ctx->gpu_device, ninfo);
 }
 
 void
@@ -301,6 +317,7 @@ batch_renderer_2d::destroy_pipeline ()
 {
   m_pipeline.reset ();
   m_sampler.reset ();
+  m_nearest_sampler.reset ();
 }
 
 void

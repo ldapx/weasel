@@ -13,6 +13,7 @@
 #include "gfx/render_context.hpp"
 #include "gfx/render_window.hpp"
 #include "gfx/rml_runtime.hpp"
+#include "gfx/ui_canvas.hpp"
 #include "rsc/resource_manager.hpp"
 #include "runtime_context.hpp"
 #include <filesystem>
@@ -116,6 +117,24 @@ ui_manager::clear_scene_bindings ()
   m_active_model_names.clear ();
   m_prepared_registry = nullptr;
   ++m_binding_generation;
+}
+
+wsl::gfx::ui_canvas &
+ui_manager::ensure_virtual_canvas (gfx::render_context &ctx,
+                                   wsl::gfx::render_window &window,
+                                   uint32_t width, uint32_t height)
+{
+  if (!m_virtual_canvas) {
+    m_virtual_canvas = std::make_unique<gfx::ui_canvas> ();
+  }
+  m_virtual_canvas->ensure (window, ctx, width, height);
+  return *m_virtual_canvas;
+}
+
+wsl::gfx::ui_canvas *
+ui_manager::virtual_canvas ()
+{
+  return m_virtual_canvas.get ();
 }
 
 void

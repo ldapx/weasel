@@ -46,6 +46,11 @@
 namespace wsl
 {
 
+namespace gfx
+{
+class ui_canvas;
+}
+
 namespace comp
 {
 
@@ -156,7 +161,18 @@ public:
     return m_needs_reload;
   }
 
+  /**
+   * Ensures the Virtual-Canvas UI target (D15/U1) exists at the requested
+   * virtual size and returns it. Reallocates lazily on size changes.
+   */
+  wsl::gfx::ui_canvas &ensure_virtual_canvas (gfx::render_context &ctx,
+                                              wsl::gfx::render_window &window,
+                                              uint32_t width, uint32_t height);
+  /** Virtual-canvas target, or nullptr before the first `ensure`. */
+  [[nodiscard]] wsl::gfx::ui_canvas *virtual_canvas ();
+
 private:
+  std::unique_ptr<wsl::gfx::ui_canvas> m_virtual_canvas;
   std::unique_ptr<wsl::gfx::ui_system_interface> m_owned_system_interface;
   wsl::gfx::ui_system_interface *m_system_interface = nullptr;
   std::unique_ptr<RenderInterface_SDL_GPU> m_owned_render_interface;

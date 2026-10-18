@@ -31,6 +31,34 @@ _gcc_include = _first_glob("/usr/lib/gcc/x86_64-pc-linux-gnu/*/include")
 _cxx_include = _first_glob("/usr/include/c++/[0-9]*")
 _clang_include = _first_glob("/usr/lib/clang/*/include")
 
+
+def _package_includes():
+    """Third-party include roots used by the engine headers.
+
+    The project may be built with xmake (``~/.xmake/packages``) or the legacy
+    CMake tree (``build/_deps``); collect whichever exists so Hawkmoth can
+    resolve headers such as ``rfl.hpp`` and ``ozz/...``. Missing paths are
+    harmless to clang, but only existing directories are added so the docs CI
+    environment keeps working unchanged.
+    """
+    import glob
+
+    patterns = [
+        os.path.join(
+            os.path.expanduser("~"), ".xmake", "packages", "*", "*", "*", "*", "include"
+        ),
+        os.path.join(_project_root, "build", "_deps", "*", "include"),
+    ]
+    found = []
+    for pattern in patterns:
+        found.extend(sorted(glob.glob(pattern)))
+    return found
+
+
+# Appended after the system paths so an already-resolved header set keeps
+# winning; the package paths only add what the system install does not have.
+_package_include_args = [f"-isystem{path}" for path in _package_includes()]
+
 hawkmoth_clang = [
     f"-I{os.path.join(_project_root, 'src')}",
     f"-I{os.path.join(_project_root, 'src', 'wsl')}",
@@ -58,7 +86,7 @@ hawkmoth_clang = [
     f"-isystem{_clang_include}" if _clang_include else "",
     "-isystem/usr/local/include",
     "-isystem/usr/include",
-]
+] + _package_include_args
 
 templates_path = ["_templates"]
 suppress_warnings = ["toctree.not_included"]

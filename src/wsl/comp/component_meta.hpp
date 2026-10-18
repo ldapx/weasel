@@ -111,6 +111,11 @@ struct meta_info
   std::string display_name;
   std::string description;
   std::string icon_path;
+  /**
+   * When true the inspector shows the value as read-only text. Used for
+   * derived/computed fields such as resolved viewport resolutions.
+   */
+  bool read_only = false;
 };
 
 /**
