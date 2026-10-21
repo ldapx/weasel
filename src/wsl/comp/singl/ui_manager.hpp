@@ -32,16 +32,27 @@
 #endif
 
 #ifndef IN_MODULE_INTERFACE
+#include <memory>
+#endif
+#ifndef IN_MODULE_INTERFACE
 #include <string>
 #endif
 #ifndef IN_MODULE_INTERFACE
 #include <unordered_set>
+#endif
+#ifndef IN_MODULE_INTERFACE
+#include <vector>
 #endif
 
 #include "wsl/comp/component_meta.hpp"
 #include "wsl/gfx/render_context.hpp"
 #include "wsl/gfx/render_window.hpp"
 #include "wsl/rsc/resource_manager.hpp"
+
+namespace wsl::das
+{
+class das_system_adapter;
+}
 
 namespace wsl
 {
@@ -74,6 +85,13 @@ public:
   Rml::DataModelConstructor ensure_data_model (entt::registry &registry,
                                                const std::string &name);
   void clear_scene_bindings ();
+  bool bind_button (entt::registry &registry, const std::string &element_id,
+                    wsl::das::das_system_adapter *owner,
+                    const std::string &method_name);
+  void attach_event_listeners ();
+  void detach_event_listeners ();
+  void clear_event_listeners ();
+  void clear_event_listeners_for (wsl::das::das_system_adapter *owner);
   void load_font (const std::string &path);
   std::size_t
   binding_generation () const
@@ -172,6 +190,8 @@ public:
   [[nodiscard]] wsl::gfx::ui_canvas *virtual_canvas ();
 
 private:
+  struct script_button_binding;
+
   std::unique_ptr<wsl::gfx::ui_canvas> m_virtual_canvas;
   std::unique_ptr<wsl::gfx::ui_system_interface> m_owned_system_interface;
   wsl::gfx::ui_system_interface *m_system_interface = nullptr;
@@ -185,6 +205,7 @@ private:
   entt::registry *m_prepared_registry = nullptr;
   std::unordered_set<std::string> m_loaded_fonts;
   std::unordered_set<std::string> m_active_model_names;
+  std::vector<std::unique_ptr<script_button_binding>> m_script_button_bindings;
   std::size_t m_binding_generation = 0;
 };
 

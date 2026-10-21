@@ -4,16 +4,62 @@ Events
 React to discrete input events -- key presses, mouse buttons, the wheel,
 mouse motion, text input and window changes.
 
-Events are delivered through a per-frame **message bus**: the engine polls SDL
-and publishes each input occurrence once per frame, and your system *pulls*
-them during its update. This is a pull model rather than a callback, which
-means several systems can each observe the same event independently. The same
-bus is visible from both daScript and C++ -- the examples below show the
-daScript form first, followed by its C++ equivalent.
+Gameplay code should use **named actions**: bind physical inputs to names
+once, then read held/edge/axis state every frame. The engine polls SDL
+and publishes each input occurrence once per frame; actions read that
+published state, so several systems can each observe the same event
+independently. The same bus is visible from both daScript and C++ -- the
+examples below show the daScript form first, followed by its C++ equivalent.
 
-Read the events from inside your system's ``on_update`` (daScript) or its
-update function (C++). Each event type exposes a ``*_count`` accessor and a
-``*_at(index)`` accessor in daScript, and a typed ``message_reader`` in C++.
+.. code-block:: das
+
+   class System : GameSystem {
+       def override on_start(var ctx : SystemContext) : void {
+           ctx.input.bind_key("jump", 44)      // Space scancode
+           ctx.input.bind_mouse("fire", 1)     // left button
+       }
+
+       def override update(var ctx : SystemContext; dt : float) : void {
+           if (ctx.input.just_pressed("jump")) {
+               // edge: fires once on press (repeats excluded)
+           }
+           if (ctx.input.pressed("fire")) {
+               // held state
+           }
+           var move = ctx.input.value2("move_left", "move_right",
+                                       "move_up", "move_down")
+       }
+   }
+
+``just_pressed`` / ``just_released`` report this frame's edges (key
+repeats never count as fresh presses); ``pressed`` is held state, and
+``value`` / ``value2`` / ``value3`` compose signed axes (+1, 0, -1).
+Read the consuming ``mouse_delta`` at most once per frame:
+
+.. code-block:: das
+   :caption: daScript
+
+   class System : GameSystem {
+       def override update(var ctx : SystemContext; dt : float) : void {
+           var pos = ctx.input.mouse_position()
+           var delta = ctx.input.mouse_delta()  // consumes the motion
+           var left_down = ctx.input.mouse_button_down(1)
+           if (!ctx.input.is_cursor_visible()) {
+               ctx.input.set_cursor_visible(true)
+           }
+       }
+   }
+
+Raw pull accessors (escape hatch)
+---------------------------------
+
+The per-frame published messages behind actions are also readable
+directly. Each event type exposes a ``*_count`` accessor and a
+``*_at(index)`` accessor in daScript, and a typed ``message_reader`` in
+C++. Prefer named actions for gameplay; use these for diagnostics and
+specialized tooling. Note: holding a native message struct in a local
+requires an ``unsafe`` block (it wraps native memory) -- read fields
+straight off the accessor call instead.
 
 The following SDL constants are available from daScript: ``SDL_BUTTON_LEFT``,
 ``SDL_BUTTON_RIGHT`` and ``SDL_SCANCODE_ESCAPE`` (identical values apply in
@@ -25,11 +71,12 @@ Mouse button
 .. code-block:: das
    :caption: daScript
 
-   def on_update(dt : float) {
-       for i in range(mouse_button_count()) {
-           let e = mouse_button_at(i)
-           if e.down && e.button == SDL_BUTTON_LEFT {
-               log_info("left click at {e.x}, {e.y}")
+   class System : GameSystem {
+       def override update(var ctx : SystemContext; dt : float) : void {
+           for (i in range(mouse_button_count())) {
+               if (mouse_button_at(i).down && mouse_button_at(i).button == SDL_BUTTON_LEFT) {
+                   ctx.log.info("left click")
+               }
            }
        }
    }
@@ -59,11 +106,12 @@ Keyboard
 .. code-block:: das
    :caption: daScript
 
-   def on_update(dt : float) {
-       for i in range(key_pressed_count()) {
-           let e = key_pressed_at(i)
-           if e.scancode == SDL_SCANCODE_ESCAPE {
-               log_info("escape pressed (repeat={e.repeat})")
+   class System : GameSystem {
+       def override update(var ctx : SystemContext; dt : float) : void {
+           for (i in range(key_pressed_count())) {
+               if (key_pressed_at(i).scancode == SDL_SCANCODE_ESCAPE) {
+                   ctx.log.info("escape pressed")
+               }
            }
        }
    }
@@ -93,10 +141,11 @@ Mouse motion
 .. code-block:: das
    :caption: daScript
 
-   def on_update(dt : float) {
-       for i in range(mouse_motion_count()) {
-           let e = mouse_motion_at(i)
-           log_debug("mouse at {e.x},{e.y} delta {e.xrel},{e.yrel}")
+   class System : GameSystem {
+       def override update(var ctx : SystemContext; dt : float) : void {
+           for (i in range(mouse_motion_count())) {
+               ctx.log.debug("mouse moved")
+           }
        }
    }
 
@@ -124,10 +173,11 @@ Mouse wheel
 .. code-block:: das
    :caption: daScript
 
-   def on_update(dt : float) {
-       for i in range(mouse_wheel_count()) {
-           let e = mouse_wheel_at(i)
-           log_info("wheel {e.x},{e.y} flipped={e.flipped}")
+   class System : GameSystem {
+       def override update(var ctx : SystemContext; dt : float) : void {
+           for (i in range(mouse_wheel_count())) {
+               ctx.log.info("wheel moved")
+           }
        }
    }
 
@@ -154,9 +204,12 @@ Text input
 .. code-block:: das
    :caption: daScript
 
-   def on_update(dt : float) {
-       for i in range(text_input_count()) {
-           log_info("typed: {text_input_text(i)}")
+   class System : GameSystem {
+       def override update(var ctx : SystemContext; dt : float) : void {
+           for (i in range(text_input_count())) {
+               ctx.log.info("typed text")
+               text_input_text(i)
+           }
        }
    }
 
@@ -183,10 +236,11 @@ Window resized
 .. code-block:: das
    :caption: daScript
 
-   def on_update(dt : float) {
-       for i in range(window_resized_count()) {
-           let e = window_resized_at(i)
-           log_info("window now {e.width}x{e.height}")
+   class System : GameSystem {
+       def override update(var ctx : SystemContext; dt : float) : void {
+           for (i in range(window_resized_count())) {
+               ctx.log.info("window resized")
+           }
        }
    }
 

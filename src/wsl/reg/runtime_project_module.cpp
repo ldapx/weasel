@@ -175,11 +175,10 @@ make_cached_registration (const component_registry::descriptor &descriptor)
   registration.is_das_component = descriptor.is_das_component;
   registration.das_struct_size = descriptor.das_struct_size;
   for (const auto &f : descriptor.das_fields) {
-    registration.das_fields.push_back ({
-        f.name, f.type_name, static_cast<int> (f.offset),
-        static_cast<int> (f.size),
-                                         static_cast<int> (f.kind),
-                                         bytes_to_hex (f.default_value) });
+    registration.das_fields.push_back (
+        { f.name, f.type_name, static_cast<int> (f.offset),
+          static_cast<int> (f.size), static_cast<int> (f.kind),
+          bytes_to_hex (f.default_value) });
   }
   return registration;
 }
@@ -342,8 +341,7 @@ runtime_project_module::gather_files (const fs::path &base, source_set &out)
 std::size_t
 runtime_project_module::compute_source_hash (const source_set &sources)
 {
-  std::size_t seed
-      = std::hash<std::string_view>{} ("runtime-type-id-path-v2");
+  std::size_t seed = std::hash<std::string_view>{}("runtime-type-id-path-v2");
 
   auto hash_combine = [] (std::size_t s, std::size_t v) {
     return s ^ (v + 0x9e3779b9 + (s << 6) + (s >> 2));
@@ -737,10 +735,10 @@ runtime_project_module::load_das_registrations_from_cache (
 // `require`s a project module fails to compile lazily.
 void
 runtime_project_module::register_project_fs_roots (const fs::path &project_root,
-                                                   const rsc::project &project)
+                                                   const rsc::project &project,
+                                                   wsl::das::das_engine &engine)
 {
-  auto *das_engine = get_das_engine ();
-  if (!das_engine->initialize ()) {
+  if (!engine.initialize ()) {
     wsl::log::xmake ()->error ("Failed to initialize daslang engine.");
     return;
   }
@@ -752,9 +750,9 @@ runtime_project_module::register_project_fs_roots (const fs::path &project_root,
   const auto sys_dir
       = fs::weakly_canonical (project_root / project.systems_path).string ();
 
-  das_engine->addFsRoot ("components", comp_dir);
-  das_engine->addFsRoot ("singletons", singl_dir);
-  das_engine->addFsRoot ("systems", sys_dir);
+  engine.addFsRoot ("components", comp_dir);
+  engine.addFsRoot ("singletons", singl_dir);
+  engine.addFsRoot ("systems", sys_dir);
 }
 
 bool
@@ -804,13 +802,14 @@ runtime_project_module::load_cached_metadata (const rsc::project &project)
   }
 
   if (!apply_registration_cache (cache)) {
-    m_last_status = "Runtime metadata cache contains conflicting registrations.";
+    m_last_status
+        = "Runtime metadata cache contains conflicting registrations.";
     m_last_error = m_last_status;
     wsl::log::xmake ()->warn ("{}", m_last_status);
     return false;
   }
   load_das_registrations_from_cache (cache);
-  register_project_fs_roots (project_root, project);
+  register_project_fs_roots (project_root, project, *get_das_engine ());
   m_loaded_project_root = project_root;
   m_source_hash = current_hash;
   m_load_state = load_state_t::metadata_cache;
@@ -896,9 +895,9 @@ runtime_project_module::finalize_load ()
     // Convert field_info to descriptor::das_field
     std::vector<wsl::reg::component_registry::descriptor::das_field> fields;
     for (const auto &fi : reg.fields) {
-      fields.push_back ({
-          fi.name, fi.type_name, static_cast<std::uint32_t> (fi.offset),
-          static_cast<std::uint32_t> (fi.size), fi.kind, fi.default_value });
+      fields.push_back (
+          { fi.name, fi.type_name, static_cast<std::uint32_t> (fi.offset),
+            static_cast<std::uint32_t> (fi.size), fi.kind, fi.default_value });
     }
 
     switch (reg.kind) {
@@ -988,7 +987,8 @@ registration_failed:
   m_suspended_event_connections.clear ();
   m_das_registrations.clear ();
   m_load_state = load_state_t::unloaded;
-  m_last_status = "Runtime registration failed; no script systems were restored.";
+  m_last_status
+      = "Runtime registration failed; no script systems were restored.";
   m_last_error = m_last_status;
   wsl::log::xmake ()->error ("{}", m_last_status);
   return false;
@@ -1023,9 +1023,9 @@ runtime_project_module::suspend_script_systems ()
   for (const event::event_connection_data &connection :
        m_runtime_ctx->event_hub ().get_all_connections ()) {
     if (script_type_ids.contains (connection.system_type_id)) {
-      m_suspended_event_connections.push_back (
-          { connection.event_type_id, connection.system_type_id,
-            connection.handler_name });
+      m_suspended_event_connections.push_back ({ connection.event_type_id,
+                                                 connection.system_type_id,
+                                                 connection.handler_name });
     }
   }
 
@@ -1062,8 +1062,7 @@ runtime_project_module::restore_script_systems ()
       entry.scene->add_system_instance (std::move (system));
     } else {
       wsl::log::xmake ()->error (
-          "Could not restore Daslang system {:#x} after reload",
-          entry.type_id);
+          "Could not restore Daslang system {:#x} after reload", entry.type_id);
     }
   }
 
@@ -1244,7 +1243,7 @@ runtime_project_module::compile_and_load (const rsc::project &project)
       return false;
     }
 
-    register_project_fs_roots (project_root, project);
+    register_project_fs_roots (project_root, project, *staged_engine);
 
     for (const auto &das_file : sources.das_sources) {
       wsl::log::xmake ()->debug ("Executing daslang file: {}",
@@ -1337,9 +1336,8 @@ runtime_project_module::compile_and_load (const rsc::project &project)
               type_id, si.size_of, das_file.string (), std::move (si.fields) });
       } else if (canonical.compare (0, singl_dir.size (), singl_dir) == 0) {
         m_das_registrations.push_back (
-            { das_registration::singleton, stem,
-              display_name_for (singl_dir), type_id, si.size_of,
-              das_file.string (), std::move (si.fields) });
+            { das_registration::singleton, stem, display_name_for (singl_dir),
+              type_id, si.size_of, das_file.string (), std::move (si.fields) });
       } else if (canonical.compare (0, sys_dir.size (), sys_dir) == 0) {
         m_das_registrations.push_back (
             { das_registration::system, stem, display_name_for (sys_dir),
@@ -1354,7 +1352,8 @@ runtime_project_module::compile_and_load (const rsc::project &project)
       const auto *existing
           = m_runtime_ctx->component_registry ().find_world_component (type_id);
       if (existing != nullptr
-          && (!existing->runtime_registered || existing->type_name != reg.type_name)) {
+          && (!existing->runtime_registered
+              || existing->type_name != reg.type_name)) {
         m_last_status = "Runtime component id collision for '" + reg.type_name
                         + "' at " + reg.script_path + ".";
         m_last_error = m_last_status;
@@ -1364,9 +1363,11 @@ runtime_project_module::compile_and_load (const rsc::project &project)
       }
     } else if (reg.kind == das_registration::singleton) {
       const auto *existing
-          = m_runtime_ctx->singleton_registry ().find_singleton_component (type_id);
+          = m_runtime_ctx->singleton_registry ().find_singleton_component (
+              type_id);
       if (existing != nullptr
-          && (!existing->runtime_registered || existing->type_name != reg.type_name)) {
+          && (!existing->runtime_registered
+              || existing->type_name != reg.type_name)) {
         m_last_status = "Runtime singleton id collision for '" + reg.type_name
                         + "' at " + reg.script_path + ".";
         m_last_error = m_last_status;
@@ -1383,10 +1384,9 @@ runtime_project_module::compile_and_load (const rsc::project &project)
             && (!existing_by_id->runtime_registered
                 || existing_by_id->type_name != reg.type_name
                 || existing_by_id->script_path != reg.script_path);
-      const bool name_conflict
-          = existing_by_name != nullptr
-            && !existing_by_name->runtime_registered
-            && existing_by_name->type_id != type_id;
+      const bool name_conflict = existing_by_name != nullptr
+                                 && !existing_by_name->runtime_registered
+                                 && existing_by_name->type_id != type_id;
       const auto duplicate_name = std::find_if (
           m_das_registrations.begin (), m_das_registrations.end (),
           [&reg, type_id] (const das_registration &other) {
@@ -1436,9 +1436,10 @@ runtime_project_module::compile_and_load_async (const rsc::project &project)
 
   wsl::log::xmake ()->debug ("Starting async runtime reload for project: {}",
                              project.name);
-  m_async_reload_future = std::async (std::launch::deferred, [this, project] () {
-    return this->compile_and_load (project);
-  });
+  m_async_reload_future
+      = std::async (std::launch::deferred, [this, project] () {
+          return this->compile_and_load (project);
+        });
 }
 
 bool

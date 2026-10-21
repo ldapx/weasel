@@ -124,6 +124,10 @@ public:
   void set_body_transform (body_id id, vector3 position, quaternion rotation);
   void set_body_surface_properties (body_id id, float friction,
                                     float restitution, object_layer layer);
+  float body_surface_friction (body_id id) const;
+  float body_surface_restitution (body_id id) const;
+  vector3 get_body_velocity (body_id id) const;
+  void set_body_velocity (body_id id, vector3 velocity);
   void add_force (body_id id, vector3 force);
   void add_impulse (body_id id, vector3 impulse);
 

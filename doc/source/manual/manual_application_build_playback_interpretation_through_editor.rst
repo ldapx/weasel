@@ -4,9 +4,9 @@ Interpretation Through Editor
 In the editor, a Weasel project is **interpreted live**. The editor reads the
 ``wslpro.json`` manifest, loads the default scene, and starts the daScript
 runtime (``das_engine``) which compiles the project's ``.das`` systems on the
-fly using the engine's own module environment (``Module_WeaselApi`` and
-``Module_Ecs``). This means ``require weasel_api`` / ``require weasel_ecs``
-resolve to the real engine bindings rather than stubs, and the systems run
+fly using the engine's own module environment (``Module_WeaselApi`` underneath
+the ``weasel`` gameplay facade). This means ``require weasel`` resolves to the
+real gameplay surface rather than stubs, and the systems run
 exactly as they will when compiled.
 
 Because there is no separate build step, iteration is immediate:

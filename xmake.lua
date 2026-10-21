@@ -891,19 +891,24 @@ target("wsl")
             os.cp(path.join(os.projectdir(), "rsc/icons"), path.join(d, "icons"))
         end
         -- compile_shaders output will be in $(buildir)/compiled_shaders
-        -- daslib copy: engine modules (weasel_ecs, weasel_helpers) must be
-        -- visible under <das-root>/daslib so `require daslib/weasel_ecs` works
+        -- Mirror public and compatibility engine modules into the project
+        -- build tree for command-line tooling. Runtime compilation discovers
+        -- source modules through das_engine's engine_modules filesystem root.
         local daslib_src = path.join(os.projectdir(), "src/wsl/das/modules/weasel_ecs.das")
         if os.isfile(daslib_src) then
-            -- try to locate daslang sourcedir
-            local das = target:pkg("daslang")
-            if das then
-                local daslib_dst = path.join(das:installdir(), "daslib")
-                os.cp(daslib_src, daslib_dst)
-                os.cp(path.join(os.projectdir(), "src/wsl/das/modules/weasel_helpers.das"), daslib_dst)
-                -- also copy to build daslib for dev
-                os.cp(daslib_src, path.join(os.projectdir(), "build/daslib"))
-                os.cp(path.join(os.projectdir(), "src/wsl/das/modules/weasel_helpers.das"), path.join(os.projectdir(), "build/daslib"))
+            local module_files = {
+                "weasel.das",
+                "weasel_editor.das",
+            }
+            local build_daslib = path.join(os.projectdir(), "build/weasel_daslib")
+            if not os.isdir(build_daslib) then
+                os.mkdir(build_daslib)
+            end
+            for _, module_file in ipairs(module_files) do
+                local module_src = path.join(os.projectdir(), "src/wsl/das/modules", module_file)
+                if os.isfile(module_src) then
+                    os.cp(module_src, build_daslib)
+                end
             end
         end
     end)
@@ -1344,4 +1349,5 @@ target("weasel_das_tests")
     add_deps("wsl")
     add_packages("doctest")
     add_includedirs("src")
+    add_defines("WSL_SOURCE_DIR=\"" .. projectdir_fwd .. "\"")
     add_tests("weasel_das_tests")

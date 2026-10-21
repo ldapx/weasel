@@ -5,9 +5,16 @@
 #include "../../reg/runtime_project_module.hpp"
 #include "../../events.hpp"
 #include "../../input.hpp"
+#include "../../sys/frame_phases.hpp"
 
 #ifndef IN_MODULE_INTERFACE
 #include <entt/entt.hpp>
+#endif
+#ifndef IN_MODULE_INTERFACE
+#include <functional>
+#endif
+#ifndef IN_MODULE_INTERFACE
+#include <cstdint>
 #endif
 #ifndef IN_MODULE_INTERFACE
 #include <string>
@@ -17,6 +24,12 @@
 #endif
 #ifndef IN_MODULE_INTERFACE
 #include <memory>
+#endif
+#ifndef IN_MODULE_INTERFACE
+#include <mutex>
+#endif
+#ifndef IN_MODULE_INTERFACE
+#include <vector>
 #endif
 
 // Forward declarations for heavy subsystems stored by unique_ptr.
@@ -295,6 +308,89 @@ public:
   {
     return *m_message_bus;
   }
+  /**
+   * Gameplay pause state, owned by the engine (not scripts). While paused,
+   * script `delta` reads zero, the frame-phase driver skips fixed steps,
+   * and physics stops stepping; variable/late passes (UI, menus) keep
+   * running. Defaults to unpaused.
+   */
+  bool
+  is_paused () const
+  {
+    return m_paused;
+  }
+  void
+  set_paused (bool paused)
+  {
+    m_paused = paused;
+  }
+  /**
+   * Gameplay time scale applied to script `delta` (`unscaled_delta` stays
+   * raw). Negative values clamp to zero. Defaults to 1.
+   */
+  double
+  time_scale () const
+  {
+    return m_time_scale;
+  }
+  void
+  set_time_scale (double scale)
+  {
+    m_time_scale = (scale >= 0.0) ? scale : 0.0;
+  }
+  /**
+   * Hook invoked once per completed fixed simulation step by the
+   * frame-phase driver (after that step's systems ran). Engine-owned clock
+   * state; subscribers (e.g. the Daslang fixed-step clock) must be cheap
+   * and thread-compatible with the system pass. Empty by default.
+   */
+  using fixed_step_hook_fn = std::function<void (double fixed_dt)>;
+  void
+  set_fixed_step_hook (fixed_step_hook_fn hook)
+  {
+    m_fixed_step_hook = std::move (hook);
+  }
+  const fixed_step_hook_fn &
+  fixed_step_hook () const
+  {
+    return m_fixed_step_hook;
+  }
+  /**
+   * One queued event posted for deferred delivery. Bytes are an opaque
+   * copy of a validated payload (script-defined or engine-owned);
+   * `layout_hash` re-validates at dispatch exactly like `emit`.
+   */
+  struct posted_event
+  {
+    entt::id_type type = 0;
+    std::string bytes;
+    std::size_t size = 0;
+    std::uint64_t layout_hash = 0;
+  };
+  /** Upper bound on queued events; posts beyond it are dropped with a warn. */
+  static constexpr std::size_t max_posted_events = 256;
+  /**
+   * Queues an event for delivery at the next pump (start of the next
+   * systems update). Thread-safe. Returns false (dropping the event) when
+   * the queue is full or the payload is empty.
+   */
+  bool post_event (entt::id_type type_id, const void *data, std::size_t size,
+                   std::uint64_t layout_hash);
+  /**
+   * Delivers queued events in FIFO posting order through the event hub,
+   * then clears the queue. Runs only while a scene is active; otherwise
+   * the queue is left intact (cap-bound). Events posted during a pump
+   * roll to the next pump. Called by both system-driving paths
+   * (`scene::update` and `core_systems::update`) before the update pass,
+   * so serial and scheduled execution agree.
+   */
+  void pump_posted_events ();
+  /**
+   * Fixed-step policy for the frame-phase driver, derived from the active
+   * physics engine when one exists (same step, clamp, and substep cap the
+   * engine simulates with), otherwise engine-wide defaults.
+   */
+  sys::frame_phase_config frame_phase_defaults () const;
   reg::registry_queries const &
   reg_queries () const
   {
@@ -425,6 +521,11 @@ private:
   rsc::world m_world;
   rsc::scene_manager m_scene_manager;
   bool m_headless = false;
+  fixed_step_hook_fn m_fixed_step_hook;
+  bool m_paused = false;
+  double m_time_scale = 1.0;
+  mutable std::mutex m_posted_events_mutex;
+  std::vector<posted_event> m_posted_events;
 
   // By-pointer (heavy, only needed in .cpp)
   std::unique_ptr<reg::component_registry> m_component_registry;

@@ -16,15 +16,16 @@ Daslang: reading messages
 
 From Daslang, the engine's built-in input messages are exposed through a pull
 API that reads the active runtime context's published buffer. There is no
-``on_event`` hook anymore -- iterate the per-frame accessors inside your system's
-``on_update``:
+``on_event`` hook -- iterate the per-frame accessors inside your system's
+``update``:
 
 .. code-block:: das
 
-   def on_update(dt : float) {
-       for i in range(key_pressed_count()) {
-           let e = key_pressed_at(i)
-           log_info("key pressed: {e.keycode}")
+   class System : GameSystem {
+       def override update(var ctx : SystemContext; dt : float) : void {
+           for (i in range(mouse_motion_count())) {
+               ctx.log.debug("mouse moved")
+           }
        }
    }
 
@@ -77,11 +78,13 @@ From Daslang, post by message name with a struct mirroring the payload:
 
 .. code-block:: das
 
-    def override on_update(dt : float) : void {
-        var msg : PlayerDied
-        msg.who  = m_player_id
-        msg.cause = 0
-        message_post("PlayerDied", msg)
+    class System : GameSystem {
+        def override update(var ctx : SystemContext; dt : float) : void {
+            var msg : PlayerDied
+            msg.who = 7u
+            msg.cause = 0
+            message_post("PlayerDied", msg)
+        }
     }
 
 Posting under an unknown name registers it on first use (name-hashed id plus
@@ -110,10 +113,13 @@ type:
 
 .. code-block:: das
 
-    def override on_update(dt : float) : void {
-        if (message_count("PlayerDied") > 0) {
-            for_each_message("PlayerDied") $(d : PlayerDied&) {
-                log_info("player died: {d.who}")
+    class System : GameSystem {
+        def override update(var ctx : SystemContext; dt : float) : void {
+            // for_each_message drives the block with each matching index;
+            // message_at copies that message out (never alias the buffer).
+            for_each_message("PlayerDied") $(i : uint) {
+                var d = message_at("PlayerDied", i, PlayerDied())
+                ctx.log.info("player died: {d.who}")
             }
         }
     }
@@ -168,13 +174,15 @@ Callbacks fire during the per-frame drain on the main thread:
 
 .. code-block:: das
 
+    // no-capture script function: the payload arrives as one struct
     def on_window_resized(ev : WindowResized) : void {
-        log_info("window resized")
     }
 
-    def override on_init() : void {
-        message_subscribe("window_resized", @@on_window_resized)
-        // later: message_unsubscribe("window_resized")
+    class System : GameSystem {
+        def override on_start(var ctx : SystemContext) : void {
+            message_subscribe("window_resized", @@on_window_resized)
+            // later: message_unsubscribe("window_resized")
+        }
     }
 
 The handler receives the posted payload as a single struct argument whose

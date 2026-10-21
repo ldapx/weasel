@@ -338,11 +338,46 @@ core_systems::update (double dt)
     }
   }
 
-  auto run_update
-      = [&] (sys::ecs_system *s, entt::registry &r) { s->update (&r, dt); };
-  m_scheduler.run_pass (sys::system_pass::update, all, registry,
-                        m_runtime_ctx->system_factory_registry (), m_stages,
-                        run_update);
+  // Deliver events queued by `event_post` before the update pass, matching
+  // scene::update so serial and scheduled execution agree: a post during
+  // frame N is visible to frame N+1 systems.
+  m_runtime_ctx->pump_posted_events ();
+  auto run_phase = [&] (sys::frame_phase phase, double step_dt) {
+    switch (phase) {
+    case sys::frame_phase::fixed: {
+      auto run_fixed = [&] (sys::ecs_system *s, entt::registry &r) {
+        s->fixed_update (&r, step_dt);
+      };
+      m_scheduler.run_pass (sys::system_pass::fixed_update, all, registry,
+                            m_runtime_ctx->system_factory_registry (), m_stages,
+                            run_fixed);
+      break;
+    }
+    case sys::frame_phase::late: {
+      auto run_late = [&] (sys::ecs_system *s, entt::registry &r) {
+        s->late_update (&r, step_dt);
+      };
+      m_scheduler.run_pass (sys::system_pass::late_update, all, registry,
+                            m_runtime_ctx->system_factory_registry (), m_stages,
+                            run_late);
+      break;
+    }
+    case sys::frame_phase::variable:
+    default: {
+      auto run_update = [&] (sys::ecs_system *s, entt::registry &r) {
+        s->update (&r, step_dt);
+      };
+      m_scheduler.run_pass (sys::system_pass::update, all, registry,
+                            m_runtime_ctx->system_factory_registry (), m_stages,
+                            run_update);
+      break;
+    }
+    }
+  };
+  sys::run_frame_phases (dt, m_runtime_ctx->frame_phase_defaults (),
+                         m_fixed_accumulator, run_phase,
+                         m_runtime_ctx->fixed_step_hook (),
+                         m_runtime_ctx->is_paused ());
 
   auto run_editor = [&] (sys::ecs_system *s, entt::registry &r) {
     s->editor_update (&r, dt);

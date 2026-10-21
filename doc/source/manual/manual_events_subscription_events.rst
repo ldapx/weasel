@@ -18,22 +18,45 @@ Key properties:
 * Connections are centralized in the :cpp:any:`wsl::event::event_hub` and
   serialized into scenes, so wired connections persist across saves.
 
-Daslang: wiring existing connections
-------------------------------------
+Daslang: subscribing from gameplay code
+-----------------------------------------
 
-From a Daslang system you can wire (and unwire) connections that were declared
-in C++. Event types are passed as strings because Daslang cannot name C++
-types directly:
+From Daslang, a system subscribes one of its methods and gets back a
+disposable handle. Event types are passed as strings because Daslang
+cannot name C++ types directly:
 
 .. code-block:: das
 
-   event_connect("PlayerHit", "CombatSystem", "on_player_hit")
-   event_disconnect("PlayerHit", "CombatSystem", "on_player_hit")
+   class System : GameSystem {
+       sub : Subscription = Subscription()
 
-The emitted payload is just a Daslang struct whose layout matches the C++ event
-struct, so a connected handler can read ``attacker`` / ``victim`` / ``damage``
-fields directly. Every other operation -- declaring sources and sinks, and
-emitting -- also has a Daslang equivalent, shown below.
+       def override on_start(var ctx : SystemContext) : void {
+           sub = subscribe_event("PlayerHit", "on_player_hit")
+       }
+
+       def on_player_hit(hit : PlayerHit) : void {
+           // ...
+       }
+
+       def override on_stop(var ctx : SystemContext) : void {
+           sub.dispose()
+       }
+   }
+
+   // equivalent one-shot wiring without a handle (call once, e.g.
+   // from a setup routine, not every frame):
+   def wire_hit_once() : void {
+       var c = event_connect("PlayerHit", "Damage System", "on_player_hit")
+       assert(c)
+       var d = event_disconnect("PlayerHit", "Damage System", "on_player_hit")
+       assert(d)
+   }
+
+The emitted payload is just a Daslang struct whose layout matches the C++
+event struct, so a connected handler can read entity ids, damage, and
+flags directly (convert raw ids with ``entity_from_id`` before keeping
+them). Every other operation -- declaring sources and sinks, emitting,
+and queued delivery -- is shown below.
 
 Defining the event payload
 --------------------------
@@ -77,17 +100,20 @@ the other's layout:
 Declaring the source -- emitter
 -------------------------------
 
-Each system declares the events it owns. From Daslang, a script system declares
-itself as the emitter of an event by name. The name may refer to an existing
-C++-declared event, or introduce a new script-defined one:
+Each system declares the events it owns. From Daslang, most gameplay
+events need no declaration at all: the first ``event_emit`` (or
+``event_post``) under an unknown name latches the payload layout and
+registers it as a script-defined event. Declare a source explicitly only
+when you need hub tooling to list it with an owner:
 
 .. code-block:: das
 
-   def override on_init() : void {
-       // an existing C++ event ...
-       event_declare_source("PlayerHit", "MyCombatSystem")
-       // ... or a script-defined one
-       event_declare_source("WaveStarted", "MyCombatSystem")
+   class System : GameSystem {
+       def override on_start(var ctx : SystemContext) : void {
+           // ownership recorded; payload still latched on first emit
+           var declared = event_declare_source("PlayerHit", "Combat System")
+           assert(declared)
+       }
    }
 
 The call returns ``false`` when the system name is unknown. Script
@@ -108,26 +134,35 @@ Declaring a sink -- handler
 
 A sink is a named handler owned by a handler system.
 
-From Daslang, a sink is simply a **class method of the calling script system**,
-declared by method name:
+From Daslang, subscribe one of the calling system's methods; you get a
+disposable handle. Declaring the handler separately and wiring it
+manually is the same thing spelled out:
 
 .. code-block:: das
 
-   class MyDamageSystem : EcsSystem {
+   class System : GameSystem {
+       sub : Subscription = Subscription()
        m_total_damage : float = 0.0
 
-       def override on_init() : void {
-           event_declare_sink("PlayerHit", "MyDamageSystem", "on_player_hit")
+       def override on_start(var ctx : SystemContext) : void {
+           // handler method: one argument matching the event payload
+           sub = subscribe_event("PlayerHit", "on_player_hit")
+           var subscribed = sub.is_valid()
+           assert(subscribed)
        }
 
-       // handler method: one argument matching the event payload
        def on_player_hit(ev : PlayerHit) : void {
            m_total_damage += ev.damage
+       }
+
+       def override on_stop(var ctx : SystemContext) : void {
+           sub.dispose()
        }
    }
 
 The handler is resolved by method name at dispatch time, so it survives script
-reloads, and the owner/system name must match the calling script system.
+reloads; the payload struct must match the event layout exactly
+(mismatches are logged and the handler is skipped).
 
 In C++, the handler is a lambda with the signature
 ``void(void *owner, entt::registry &, const void *)`` that downcasts the owner
@@ -156,24 +191,40 @@ Emitting
 --------
 
 From Daslang, fill a struct mirroring the payload and emit it by event name.
-Entity identities travel as plain integers (``uint``):
+Entity identities travel as plain integers (convert them with
+``entity_from_id`` before keeping them):
 
 .. code-block:: das
 
-   def override on_update(dt : float) : void {
-       if (m_hit_landed) {
-           var hit : PlayerHit
-           hit.attacker = m_attacker
-           hit.victim   = m_victim
-           hit.damage   = m_damage
-           event_emit("PlayerHit", hit)
+   struct Ping {
+       seq : int = 0
+   }
+
+   class System : GameSystem {
+       frame : int = 0
+
+       def override update(var ctx : SystemContext; dt : float) : void {
+           frame = frame + 1
+           if (frame == 1) {
+               var hit : PlayerHit
+               hit.attacker = 1u
+               hit.victim = 2u
+               hit.damage = 10.0
+               event_emit("PlayerHit", hit)
+               var first = Ping()
+               first.seq = 1
+               event_post("Ping", first)
+           }
        }
    }
 
 ``event_emit`` dispatches immediately to every connected sink. The payload must
 be a structure; the first emit under an unknown event name registers it as a
-script-defined type and latches the struct's layout, and later emits validate
-against it (mismatches are logged and dropped).
+script-defined type and latches the struct layout, and later emits validate
+against it (mismatches are logged and dropped). ``event_post`` validates
+identically but queues the payload and returns; it is delivered at the next
+pump, in posting order. Prefer ``post`` when the receiver must not run
+re-entrantly (notably inside another handler or a query).
 
 In C++, construct a handle from the hub and emit. The handle is a non-owning
 view; the source must already be declared. Entity identity travels in the
@@ -193,12 +244,19 @@ payload, never in the connection:
 Connecting and disconnecting at runtime
 ---------------------------------------
 
-From Daslang, wire (and unwire) declared ends by name:
+From Daslang, prefer the ``Subscription`` returned by ``subscribe_event``
+(``dispose()`` disconnects it). Declared ends can also be wired by name:
 
 .. code-block:: das
 
-   event_connect("PlayerHit", "MyDamageSystem", "on_player_hit")
-   event_disconnect("PlayerHit", "MyDamageSystem", "on_player_hit")
+   // same effect as sub = subscribe_event("PlayerHit", "on_player_hit");
+   // call once, not per frame:
+   def wire_hit_once() : void {
+       var c = event_connect("PlayerHit", "Damage System", "on_player_hit")
+       assert(c)
+       var d = event_disconnect("PlayerHit", "Damage System", "on_player_hit")
+       assert(d)
+   }
 
 In C++, after both sides are declared, use the typed handle API (no entity
 arguments):

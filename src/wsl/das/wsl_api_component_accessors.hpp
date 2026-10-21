@@ -159,6 +159,11 @@ struct Sprite2DProxy
 
   ::das::float4 &color ();
   ::das::float2 &size ();
+  ::das::float2 &uv_offset ();
+  ::das::float2 &uv_scale ();
+  bool &flip_v ();
+  bool &flip_h ();
+  int &z_index ();
 };
 
 struct PointLightProxy
@@ -171,6 +176,7 @@ struct PointLightProxy
 
   ::das::float3 &color ();
   float &intensity ();
+  float &radius ();
 };
 
 struct DirectionalLightProxy
@@ -195,6 +201,9 @@ struct SpotLightProxy
 
   ::das::float3 &color ();
   float &intensity ();
+  float &range ();
+  float &inner_cos ();
+  float &outer_cos ();
 };
 
 TransformProxy get_transform_accessor (uint32_t entity,

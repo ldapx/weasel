@@ -28,6 +28,8 @@ enum class system_pass
 {
   update,
   editor_update,
+  fixed_update,
+  late_update,
   render_build
 };
 

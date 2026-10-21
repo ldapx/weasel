@@ -54,23 +54,24 @@ the current runtime loader for program metadata and class-adapter execution.
 
 | File | Location | Role |
 |------|----------|------|
-| `weasel_helpers.das` | `modules/` | `get_component_or` built-in views and the `query` macro |
-| `weasel_ecs.das` | `modules/` | Base class `EcsSystem` for system adapters |
+| `weasel.das` | `modules/` | Gameplay facade: `GameSystem` base, `World`/`Entity`/`SystemContext`, typed component API, `query` macros, engine services. Includes the `EcsSystem` adapter base (folded in; the old `weasel_ecs.das` is gone) |
+| `weasel_editor.das` | `modules/` | Editor-only viewport helpers; gameplay code must never require it |
+
+Gameplay scripts import exactly one module: `require weasel`.
 
 ### Module Resolution
 
-When a `.das` file does `require weasel_api`, the resolution depends on the execution path:
+When a `.das` file does `require weasel`, the resolution depends on the execution path:
 
-| Path | Resolution | Generic helpers visible? |
+| Path | Resolution | Typed helpers visible? |
 |------|-----------|------------------------|
-| daScript Interpretation (Editor) | C++ `Module_WeaselApi` (real bindings) | Yes — via `weasel_helpers.das` |
-| daScript AOT (CMake Build) | Real C++ `Module_WeaselApi` in the in-process compiler | Yes — via `weasel_helpers.das` |
+| daScript Interpretation (Editor) | `weasel.das` gameplay facade over C++ `Module_WeaselApi` (real bindings) | Yes — world-scoped `World`/`Entity` API, `query` macros, services |
+| daScript AOT (CMake Build) | Same facade compiled in the in-process compiler | Yes — same facade (module-less scripts; explicit-`module` scripts hit an upstream AOT crash) |
 
-The key insight: `weasel_helpers.das` has **no C++ module counterpart**, so there's nothing to shadow it. Both AOT and interpreted modes compile it from the `.das` file directly.
+The key insight: gameplay code never touches the native module directly. `weasel.das` is the single public surface; the legacy helper modules (`weasel_helpers.das`, `weasel_ecs.das`) were deleted after the facade absorbed them.
 
 ```
-require weasel_api      → C++ Module_WeaselApi (interpreted and AOT)
-require weasel_helpers  → weasel_helpers.das (always from .das file)
+require weasel      → weasel.das facade (interpreted and AOT)
 ```
 
 > ⚠️ **Ignore any `weasel_api.das` you find on disk.** `weasel_api` is a C++
@@ -88,7 +89,7 @@ The `ProjectFsFileAccess` class (defined in `das_engine.cpp`) extends `FsFileAcc
 
 The engine registers the following roots:
 - **daslib**: Built-in daScript modules (`math`, `strings`, etc.)
-- **engine_modules**: `src/wsl/das/modules/` — for `require weasel_helpers`
+- **engine_modules**: `src/wsl/das/modules/` — for `require weasel`
 - **components**, **systems**: Project-specific directories (added via `addFsRoot()`)
 
 ## Key Files
@@ -102,70 +103,75 @@ The engine registers the following roots:
 | `das_system_adapter.hpp/cpp` | Daslang class-adapter system bridge |
 | `das_registration.hpp/cpp` | File discovery and registration — compiles `.das` files, extracts struct info, registers components/systems |
 | `das_interop.hpp/cpp` | Low-level `addInterop` functions for runtime type introspection (`describe_type`, `type_name`, etc.) |
-| `modules/weasel_helpers.das` | Built-in component views and the `query` macro |
-| `modules/weasel_ecs.das` | `EcsSystem` base class for system adapters |
+| `modules/weasel.das` | Gameplay facade: typed world/entity API, `query` macros, engine services. Includes the `EcsSystem` adapter base and `GameSystem` |
 
 ## Writing a daScript System
 
 Create a `.das` file in your project's `systems/` directory:
 
 ```das
-require weasel_api
-require weasel_ecs
-require weasel_helpers
-require math
-require mouse_rotate
+options gen2
+module my_system
 
-class System : EcsSystem {
-    m_accumulated_dx : float = 0.0
+require weasel
 
-    def override on_init() : void {
-        query() $(t : Transform&; mr : MouseRotate&) {
-            // initialization logic
+class System : GameSystem {
+    def override on_start(var ctx : SystemContext) : void {
+        ctx.input.bind_key("jump", 44)  // Space scancode
+    }
+
+    def override update(var ctx : SystemContext; dt : float) : void {
+        if ctx.input.just_pressed("jump") {
+            query(ctx.world) $(t : Transform&; mr : MouseRotate&) {
+                t.position.y += 1.0
+            }
         }
     }
 
-    def override on_update(dt : float) : void {
-        // per-frame update; read input via the pull-only message bus, e.g.
-        for i in range(mouse_motion_count()) {
-            var m = mouse_motion_at(i)
-            m_accumulated_dx += m.xrel
-        }
-    }
-
-    def override on_inactive() : void {
+    def override on_stop(var ctx : SystemContext) : void {
         // cleanup
     }
 }
 ```
 
+The engine instantiates the class literally named `System`; it must
+extend `GameSystem`. Lifecycle hooks take a mutable `var ctx` so service
+methods (`ctx.input.*`, `ctx.log.*`) bind. Input is pull-based: bind
+named actions once, read edges/held state each frame.
+
 ### Lifecycle Methods
 
 | Method | When called |
 |--------|------------|
-| `on_init()` | Once after the system is loaded and all entities are available |
-| `on_update(dt)` | Every frame |
-| `on_event()` | When an SDL event occurs (before `on_update`) |
-| `on_inactive()` | When the system is being shut down or scene is changing |
+| `on_start(ctx)` | Once after the system is loaded and all entities are available |
+| `update(ctx, dt)` | Every frame |
+| `fixed_update(ctx, fixed_dt)` | Zero or more times per frame, before the variable pass, with the physics fixed step |
+| `late_update(ctx, dt)` | Once per frame after the variable pass |
+| `on_stop(ctx)` | When the system is being shut down or the scene is changing |
 
 ### Component Access and Queries
 
-The `weasel_helpers.das` module provides live built-in views and direct
-references for Daslang components inside queries:
+The `weasel` facade provides typed world-scoped access. Presence is
+explicit per call (`has` / `get` which panics when absent /
+`get_or_default` value copy / `try_get` conditional fill):
 
 ```das
-var transform = get_component_or(entity, Transform())
-transform.position.x = 10.0
+var world = current_world()
+var e = world.create_entity()
+assert(has(world, e, Transform()))
+var t = get(world, e, Transform())
+t.position.x = 10.0
 
-query() $(t : Transform&; mr : MouseRotate&) {
+query(world) $(t : Transform&; mr : MouseRotate&) {
     t.position.x += 1.0
     mr.yaw = 5.0
 }
 ```
 
-Built-in view properties point directly into EnTT storage. Daslang component
-query references point directly into the scene-local Daslang component pool;
-there is no `set_component_t` write-back step.
+Built-in views are live proxies into EnTT storage. Daslang component
+query references point directly into the scene-local Daslang component
+pool; there is no write-back step. Structural changes inside a query are
+rejected — queue them through `ctx.commands` instead.
 
 ## SIGSEGV Protection
 
@@ -183,10 +189,10 @@ Each compiled program gets its own `Context` because `Context::relocateCode` rel
 
 The engine intentionally does NOT call `require_dynamic_modules` during initialization. It compiles `.das_module` files and stores them in thread-local `ModuleKarma`. When the worker thread later compiles user `.das` files, the compiled modules may be in an inconsistent state across threads, causing corruption (hash set corruption in `buildAccessFlags`, etc.). Instead, modules like `builtin.das` are compiled on-demand by `compileDaScript` on the worker thread.
 
-### Native module plus helper macro
+### Native module plus facade
 
 `weasel_api` is the real native module in both interpreted and in-process AOT
-compilation. `weasel_helpers.das` contains only the public `get_component_or`
-overloads and the `query` AST macro. It calls the native module's stable pointer
-and iteration primitives; it does not maintain a parallel component copy or an
-AOT-only stub module.
+compilation. `weasel.das` is the single gameplay surface over it: typed
+`World`/`Entity` handles, the `query` AST macros, and the engine services.
+The legacy helper modules are deleted; nothing outside `weasel.das` may
+define a parallel component-access or query surface.

@@ -7,13 +7,20 @@ A **system** is where behavior lives in the ECS. A system declares one or more
 operates on their components. By keeping logic in systems and data in
 components, ECS avoids the tight coupling of traditional object hierarchies.
 
-Weasel systems follow a common lifecycle driven by the engine:
+Weasel systems follow a common lifecycle driven by the engine. Daslang
+game systems (``class System : GameSystem``) implement it as:
 
-- **on_init** -- called once when the system is first loaded/initialized.
-- **on_update(dt)** -- called every frame with the delta time, where the bulk
-  of per-frame work happens.
-- **on_event()** -- called when an engine event occurs (input, window, ...).
-- **on_inactive()** -- called when the system is disabled or unloaded.
+- **on_start(var ctx)** -- called once after the scene is ready
+- **update(var ctx, dt)** -- called once per active frame
+- **fixed_update(var ctx, fixed_dt)** -- zero or more times per frame,
+  before physics, with the fixed step
+- **late_update(var ctx, dt)** -- called after ordinary frame systems
+- **on_stop(var ctx)** -- called before scene removal or script replacement
+
+(Native C++ systems use the ``on_init`` / ``on_update`` / ``on_inactive``
+entry points through the class adapter; there is no ``on_event``
+callback -- input arrives through the pull-only message bus and game
+events through typed subscriptions.)
 
 Two kinds of systems exist in Weasel:
 

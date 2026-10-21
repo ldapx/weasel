@@ -16,6 +16,8 @@
 #include "gfx/ui_canvas.hpp"
 #include "rsc/resource_manager.hpp"
 #include "runtime_context.hpp"
+#include "wsl/das/das_system_adapter.hpp"
+#include <functional>
 #include <filesystem>
 #include <string>
 
@@ -26,6 +28,33 @@ namespace comp
 {
 namespace singl
 {
+
+struct ui_manager::script_button_binding
+{
+  struct listener final : Rml::EventListener
+  {
+    std::function<void ()> callback;
+
+    explicit listener (std::function<void ()> callback_fn)
+        : callback (std::move (callback_fn))
+    {
+    }
+
+    void
+    ProcessEvent (Rml::Event &) override
+    {
+      if (callback) {
+        callback ();
+      }
+    }
+  };
+
+  Rml::Element *element = nullptr;
+  wsl::das::das_system_adapter *owner = nullptr;
+  std::string element_id;
+  std::string method_name;
+  std::unique_ptr<listener> event_listener;
+};
 
 ui_manager::ui_manager (gfx::render_context &ctx,
                         wsl::gfx::render_window &window,
@@ -78,12 +107,12 @@ ui_manager::~ui_manager ()
   if (m_context == nullptr)
     return;
 
+  clear_scene_bindings ();
   if (m_active_document_instance != nullptr) {
     m_active_document_instance->Close ();
     m_active_document_instance = nullptr;
   }
 
-  clear_scene_bindings ();
   // Destroy only this context; RmlUi itself is torn down when the last
   // acquire (this manager or an editor front-end) releases the runtime.
   Rml::RemoveContext ("UI Context");
@@ -108,6 +137,7 @@ ui_manager::register_meta ()
 void
 ui_manager::clear_scene_bindings ()
 {
+  clear_event_listeners ();
   if (m_context != nullptr) {
     for (const std::string &name : m_active_model_names) {
       m_context->RemoveDataModel (name);
@@ -117,6 +147,116 @@ ui_manager::clear_scene_bindings ()
   m_active_model_names.clear ();
   m_prepared_registry = nullptr;
   ++m_binding_generation;
+}
+
+bool
+ui_manager::bind_button (entt::registry &registry,
+                         const std::string &element_id,
+                         wsl::das::das_system_adapter *owner,
+                         const std::string &method_name)
+{
+  if (m_context == nullptr || owner == nullptr || element_id.empty ()
+      || method_name.empty ()) {
+    return false;
+  }
+  if (m_prepared_registry != &registry) {
+    prepare_scene (registry);
+  }
+
+  for (const auto &binding : m_script_button_bindings) {
+    if (binding->owner == owner && binding->element_id == element_id
+        && binding->method_name == method_name) {
+      return true;
+    }
+  }
+
+  auto binding = std::make_unique<script_button_binding> ();
+  binding->owner = owner;
+  binding->element_id = element_id;
+  binding->method_name = method_name;
+  entt::registry *const callback_registry = &registry;
+  const std::string callback_method = method_name;
+  binding->event_listener = std::make_unique<script_button_binding::listener> (
+      [owner, callback_registry, callback_method] {
+        if (callback_registry != nullptr) {
+          owner->invoke_ui_callback (callback_method.c_str (),
+                                     *callback_registry);
+        }
+      });
+
+  if (m_active_document_instance != nullptr) {
+    binding->element
+        = m_active_document_instance->GetElementById (element_id);
+    if (binding->element == nullptr) {
+      return false;
+    }
+    binding->element->AddEventListener ("click",
+                                        binding->event_listener.get ());
+  }
+  m_script_button_bindings.push_back (std::move (binding));
+  return true;
+}
+
+void
+ui_manager::attach_event_listeners ()
+{
+  if (m_context == nullptr || m_active_document_instance == nullptr) {
+    return;
+  }
+  for (const auto &binding : m_script_button_bindings) {
+    if (binding->element != nullptr) {
+      continue;
+    }
+    binding->element
+        = m_active_document_instance->GetElementById (binding->element_id);
+    if (binding->element == nullptr) {
+      wsl::log::sys ()->warn ("UI button '{}' was not found in the active document",
+                              binding->element_id);
+      continue;
+    }
+    binding->element->AddEventListener ("click",
+                                        binding->event_listener.get ());
+  }
+}
+
+void
+ui_manager::detach_event_listeners ()
+{
+  for (const auto &binding : m_script_button_bindings) {
+    if (binding->element != nullptr && binding->event_listener != nullptr) {
+      binding->element->RemoveEventListener ("click",
+                                            binding->event_listener.get ());
+      binding->element = nullptr;
+    }
+  }
+}
+
+void
+ui_manager::clear_event_listeners ()
+{
+  detach_event_listeners ();
+  m_script_button_bindings.clear ();
+}
+
+void
+ui_manager::clear_event_listeners_for (wsl::das::das_system_adapter *owner)
+{
+  if (owner == nullptr) {
+    return;
+  }
+  for (auto it = m_script_button_bindings.begin ();
+       it != m_script_button_bindings.end ();) {
+    const auto &binding = *it;
+    if (binding->owner != owner) {
+      ++it;
+      continue;
+    }
+    if (binding->element != nullptr && binding->event_listener != nullptr) {
+      binding->element->RemoveEventListener ("click",
+                                            binding->event_listener.get ());
+    }
+    it = m_script_button_bindings.erase (it);
+  }
 }
 
 wsl::gfx::ui_canvas &
@@ -144,13 +284,13 @@ ui_manager::prepare_scene (entt::registry &registry)
     return;
   }
 
+  clear_scene_bindings ();
   if (m_active_document_instance != nullptr) {
     m_active_document_instance->Close ();
     m_active_document_instance = nullptr;
   }
 
   m_loaded_document_id.value = entt::null;
-  clear_scene_bindings ();
   m_prepared_registry = &registry;
 }
 

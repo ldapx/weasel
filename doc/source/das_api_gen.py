@@ -255,8 +255,8 @@ SECTION_ORDER = [
 # Curated docs for the component accessor proxy API.
 #
 # The accessor externs (get_transform_accessor, ...) are internal C++
-# bindings; the user-facing entry points are the `get_component(entity, Tag)`
-# overloads and the tag functions defined in weasel_helpers.das.
+# bindings; the user-facing entry points are the world-scoped `get`/`has`
+# typed overloads in the `weasel` facade module.
 COMPONENT_ACCESSOR_DOCS = """\
 Component accessor proxies
 --------------------------
@@ -383,11 +383,21 @@ def parse_binding_registrations(source_dir: Path) -> BindingModule:
         if func_start and current_section:
             wrapper_sections[func_start.group(1)] = current_section
 
-    # Find all addExtern registrations
+    # Find all addExtern registrations (including two-template-argument
+    # forms, e.g. proxy accessors bound with an explicit SimNode type).
+    # The module argument is `*this` in Module_WeaselApi but `mod` in the
+    # shared register_component_accessors helper.
     extern_pattern = re.compile(
-        r"addExtern\s*<\s*DAS_BIND_FUN\s*\(\s*(\w+)\s*\)\s*>"
-        r'\s*\(\s*\*this\s*,\s*lib\s*,\s*"(\w+)"'
-        r"(?:\s*,\s*::das::SideEffects::(\w+))?"
+        r"addExtern\s*<\s*DAS_BIND_FUN\s*\(\s*(\w+)\s*\)"
+        r"(?:\s*,\s*[^>]+)?\s*>\s*\(\s*(?:\*this|mod)\s*,\s*lib\s*,"
+        r"\s*\"(\w+)\"(?:\s*,\s*::das::SideEffects::(\w+))?"
+    )
+
+    # Find addInterop registrations (e.g. the event_emit bridge), which use
+    # the same (*this, lib, "name", side-effects, ...) call convention.
+    interop_pattern = re.compile(
+        r"addInterop\s*<\s*(\w+)\s*,[^>]*>\s*\(\s*\*this\s*,\s*lib\s*,"
+        r"\s*\"(\w+)\"(?:\s*,\s*::das::SideEffects::(\w+))?"
     )
 
     # Find addConstant registrations
@@ -404,7 +414,11 @@ def parse_binding_registrations(source_dir: Path) -> BindingModule:
         "event_kind::quit": "0 (quit)",
     }
 
-    for match in extern_pattern.finditer(content):
+    for match in sorted(
+        list(extern_pattern.finditer(content))
+        + list(interop_pattern.finditer(content)),
+        key=lambda m: m.start(),
+    ):
         cpp_name = match.group(1)
         das_name = match.group(2)
         side_effects = match.group(3) or "none"
@@ -696,7 +710,12 @@ def generate_components_rst(source_dir: Path, output_dir: Path):
 
 
 def generate_ecs_rst(output_dir: Path):
-    """Generate EcsSystem class documentation."""
+    """Generate GameSystem lifecycle documentation.
+
+    The legacy ``weasel_ecs`` module (``EcsSystem`` base) was folded into
+    the ``weasel`` facade; game code declares ``class System : GameSystem``.
+    This page is kept as a redirect stub so old links keep resolving.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rst_path = output_dir / "weasel_ecs.rst"
@@ -705,26 +724,15 @@ def generate_ecs_rst(output_dir: Path):
         f.write("==========\n\n")
         f.write(".. das:module:: weasel_ecs\n\n")
 
-        f.write(".. das:class:: EcsSystem\n\n")
-        f.write("   Base class for daslang-backed ECS systems.\n\n")
-        f.write("   Inherit from this class and override the lifecycle methods\n")
-        f.write("   to create game logic in daslang.\n\n")
+        f.write(".. note::\n")
+        f.write("   The ``weasel_ecs`` module no longer exists as a gameplay\n")
+        f.write("   import. ``EcsSystem`` now lives in the ``weasel`` facade\n")
+        f.write("   and game systems extend ``GameSystem`` (``class System :\n")
+        f.write("   GameSystem``).\n\n")
 
-        f.write("   .. das:function:: on_init() : void\n\n")
-        f.write("      Called once when the system is first loaded.\n\n")
-
-        f.write("   .. das:function:: on_update(dt : float) : void\n\n")
-        f.write("      Called every frame with the delta time in seconds.\n\n")
-
-        f.write("   .. das:function:: on_event() : void\n\n")
-        f.write(
-            "      Called when an engine event occurs (mouse, keyboard, window).\n\n"
-        )
-        f.write("      Use ``get_event_kind()`` and the ``EVENT_*`` constants to\n")
-        f.write("      determine the event type.\n\n")
-
-        f.write("   .. das:function:: on_inactive() : void\n\n")
-        f.write("      Called when the system is disabled or unloaded.\n\n")
+        f.write("   See the migration guide for the lifecycle contract\n")
+        f.write("   (``on_start`` / ``update`` / ``fixed_update`` /\n")
+        f.write("   ``late_update`` / ``on_stop``).\n")
 
     print(f"  Generated {rst_path}")
 

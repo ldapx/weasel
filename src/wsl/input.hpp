@@ -49,6 +49,8 @@ public:
   SDL_Keymod mod = SDL_KMOD_NONE;
   SDL_Scancode scancode = SDL_SCANCODE_UNKNOWN;
   SDL_Keycode keycode = SDLK_UNKNOWN;
+  /** SDL mouse button id (1 = left, 2 = middle, 3 = right); -1 disables. */
+  int mouse_button = -1;
 
   /**
    * Checks if this binding uses scancode (physical key location).
@@ -68,6 +70,16 @@ public:
   is_keycode () const
   {
     return keycode != SDLK_UNKNOWN;
+  }
+
+  /**
+   * Checks if this binding uses an SDL mouse button.
+   * :return: `true` when mouse_button holds a valid SDL button id.
+   */
+  constexpr bool
+  is_mouse () const
+  {
+    return mouse_button >= 0;
   }
 
   /**

@@ -116,21 +116,6 @@ Functions for creating, destroying, and querying entities.
 
    :returns: uint
 
-Generic component queries
--------------------------
-
-Generic queries that work with any component type.
-
-.. das:function:: has_component(type_id : uint, entity : uint) : bool
-
-   Returns ``true`` if the entity owns a component with the given type ID.
-
-   :param:
-      type_id (uint)
-      entity (uint)
-
-   :returns: bool
-
 Scene operations
 ----------------
 
@@ -285,14 +270,55 @@ Component type lookup
 
 Look up component type IDs at runtime.
 
-.. das:function:: get_component_type_id(type_ids : var) : uint
+.. das:function:: get_component_type_id(display_name : var) : uint
 
    Looks up a component type ID by its display name (e.g. ``"Transform"``).
 
    :param:
-      type_ids (var)
+      display_name (var)
 
    :returns: uint
+
+Other
+-----
+
+.. das:function:: get_transform_accessor()
+
+.. das:function:: get_transform_2d_accessor()
+
+.. das:function:: get_camera_2d_accessor()
+
+.. das:function:: get_sprite_2d_accessor()
+
+.. das:function:: get_point_light_accessor()
+
+.. das:function:: get_directional_light_accessor()
+
+.. das:function:: get_spot_light_accessor()
+
+.. das:function:: get_hierarchy_accessor()
+
+.. das:function:: get_world_transform_accessor()
+
+.. das:function:: get_rigid_body_accessor()
+
+.. das:function:: get_rigid_body_mass()
+
+.. das:function:: get_character_body_accessor()
+
+.. das:function:: get_model_instance_3d_accessor()
+
+.. das:function:: get_area_3d_accessor()
+
+.. das:function:: get_audio_accessor()
+
+.. das:function:: get_prefab_instance_accessor()
+
+.. das:function:: get_subviewport_accessor()
+
+.. das:function:: each_world_entity_with()
+
+.. das:function:: each_world_entity_with_except()
 
 Model instance
 --------------
@@ -306,9 +332,19 @@ Swap models and material overrides on entities.
    :param:
       msg (var)
 
+.. das:function:: _log_info(msg : var)
+
+   :param:
+      msg (var)
+
 .. das:function:: log_debug(msg : var)
 
    Logs a message at debug level.
+
+   :param:
+      msg (var)
+
+.. das:function:: _log_debug(msg : var)
 
    :param:
       msg (var)
@@ -320,6 +356,11 @@ Swap models and material overrides on entities.
    :param:
       msg (var)
 
+.. das:function:: _log_warn(msg : var)
+
+   :param:
+      msg (var)
+
 .. das:function:: log_error(msg : var)
 
    Logs a message at error level.
@@ -327,21 +368,393 @@ Swap models and material overrides on entities.
    :param:
       msg (var)
 
-Generic component add/remove
-----------------------------
-
-.. das:function:: add_component(name : uint) : bool
+.. das:function:: _log_error(msg : var)
 
    :param:
-      name (uint)
+      msg (var)
+
+.. das:function:: log_trace(msg : var)
+
+   :param:
+      msg (var)
+
+.. das:function:: _log_trace(msg : var)
+
+   :param:
+      msg (var)
+
+.. das:function:: _current_world()
+
+.. das:function:: _ui_bind_button(element_id : var, method_name : var) : bool
+
+   :param:
+      element_id (var)
+      method_name (var)
 
    :returns: bool
 
-.. das:function:: remove_component(entity : uint, name : uint) : bool
+.. das:function:: _world_create_entity(world : var) : uint
 
    :param:
-      entity (uint)
-      name (uint)
+      world (var)
+
+   :returns: uint
+
+.. das:function:: _world_destroy_entity(world : var, entity_world : var, entity_id : uint, context : var, at : var) : bool
+
+   :param:
+      world (var)
+      entity_world (var)
+      entity_id (uint)
+      context (var)
+      at (var)
+
+   :returns: bool
+
+.. das:function:: _world_entity_is_alive(world : var, entity_world : var, entity_id : uint) : bool
+
+   :param:
+      world (var)
+      entity_world (var)
+      entity_id (uint)
+
+   :returns: bool
+
+.. das:function:: _world_entity_is_null(entity_world : var, entity_id : uint) : bool
+
+   :param:
+      entity_world (var)
+      entity_id (uint)
+
+   :returns: bool
+
+.. das:function:: _world_find_entity(world : var, name : var) : uint
+
+   :param:
+      world (var)
+      name (var)
+
+   :returns: uint
+
+.. das:function:: _world_set_name(world : var, entity_world : var, entity_id : uint, name : var) : bool
+
+   :param:
+      world (var)
+      entity_world (var)
+      entity_id (uint)
+      name (var)
+
+   :returns: bool
+
+.. das:function:: _world_set_parent(world : var, child_world : var, child_id : uint, parent_world : var, parent_id : uint, keep_world : bool, context : var, at : var) : bool
+
+   :param:
+      world (var)
+      child_world (var)
+      child_id (uint)
+      parent_world (var)
+      parent_id (uint)
+      keep_world (bool)
+      context (var)
+      at (var)
+
+   :returns: bool
+
+.. das:function:: _world_get_parent(world : var, entity_world : var, entity_id : uint) : uint
+
+   :param:
+      world (var)
+      entity_world (var)
+      entity_id (uint)
+
+   :returns: uint
+
+.. das:function:: _world_get_child_count(world : var, entity_world : var, entity_id : uint) : uint
+
+   :param:
+      world (var)
+      entity_world (var)
+      entity_id (uint)
+
+   :returns: uint
+
+.. das:function:: _world_get_child(world : var, entity_world : var, entity_id : uint, index : uint) : uint
+
+   :param:
+      world (var)
+      entity_world (var)
+      entity_id (uint)
+      index (uint)
+
+   :returns: uint
+
+.. das:function:: _world_change_scene(world : var, scene_name : var) : bool
+
+   :param:
+      world (var)
+      scene_name (var)
+
+   :returns: bool
+
+.. das:function:: _world_entity_from_id(world : var, entity_id : uint) : uint
+
+   :param:
+      world (var)
+      entity_id (uint)
+
+   :returns: uint
+
+.. das:function:: _world_entity_id(world : var, entity_world : var, entity_id : uint) : uint
+
+   :param:
+      world (var)
+      entity_world (var)
+      entity_id (uint)
+
+   :returns: uint
+
+.. das:function:: _world_component_type_id(world : var, type_name : var) : uint
+
+   :param:
+      world (var)
+      type_name (var)
+
+   :returns: uint
+
+.. das:function:: _world_has_component(world : var, entity_world : var, entity_id : uint, type_id : uint) : bool
+
+   :param:
+      world (var)
+      entity_world (var)
+      entity_id (uint)
+      type_id (uint)
+
+   :returns: bool
+
+.. das:function:: _world_has_animator(world : var, entity_world : var, entity_id : uint) : bool
+
+   :param:
+      world (var)
+      entity_world (var)
+      entity_id (uint)
+
+   :returns: bool
+
+.. das:function:: _world_add_component(world : var, entity_world : var, entity_id : uint, type_id : uint, context : var, at : var) : bool
+
+   :param:
+      world (var)
+      entity_world (var)
+      entity_id (uint)
+      type_id (uint)
+      context (var)
+      at (var)
+
+   :returns: bool
+
+.. das:function:: _world_remove_component(world : var, entity_world : var, entity_id : uint, type_id : uint, context : var, at : var) : bool
+
+   :param:
+      world (var)
+      entity_world (var)
+      entity_id (uint)
+      type_id (uint)
+      context (var)
+      at (var)
+
+   :returns: bool
+
+.. das:function:: _world_defer_destroy(world : var, entity_world : var, entity_id : uint) : bool
+
+   :param:
+      world (var)
+      entity_world (var)
+      entity_id (uint)
+
+   :returns: bool
+
+.. das:function:: _world_defer_add_component(world : var, entity_world : var, entity_id : uint, type_id : uint) : bool
+
+   :param:
+      world (var)
+      entity_world (var)
+      entity_id (uint)
+      type_id (uint)
+
+   :returns: bool
+
+.. das:function:: _world_defer_remove_component(world : var, entity_world : var, entity_id : uint, type_id : uint) : bool
+
+   :param:
+      world (var)
+      entity_world (var)
+      entity_id (uint)
+      type_id (uint)
+
+   :returns: bool
+
+.. das:function:: _world_singleton_type_id(world : var, type_name : var) : uint
+
+   :param:
+      world (var)
+      type_name (var)
+
+   :returns: uint
+
+.. das:function:: _world_has_singleton(world : var, type_id : uint) : bool
+
+   :param:
+      world (var)
+      type_id (uint)
+
+   :returns: bool
+
+.. das:function:: _world_add_singleton(world : var, type_id : uint) : bool
+
+   :param:
+      world (var)
+      type_id (uint)
+
+   :returns: bool
+
+.. das:function:: _world_remove_singleton(world : var, type_id : uint) : bool
+
+   :param:
+      world (var)
+      type_id (uint)
+
+   :returns: bool
+
+.. das:function:: _world_singleton_data(world : var, type_id : uint)
+
+   :param:
+      world (var)
+      type_id (uint)
+
+.. das:function:: _world_component_data(world : var, entity_world : var, entity_id : uint, type_id : uint)
+
+   :param:
+      world (var)
+      entity_world (var)
+      entity_id (uint)
+      type_id (uint)
+
+.. das:function:: _world_clone_entity(world : var, src_world : var, src_id : uint, parent_world : var, parent_id : uint, context : var, at : var) : uint
+
+   :param:
+      world (var)
+      src_world (var)
+      src_id (uint)
+      parent_world (var)
+      parent_id (uint)
+      context (var)
+      at (var)
+
+   :returns: uint
+
+.. das:function:: _world_destroy_entity_only(world : var, entity_world : var, entity_id : uint, context : var, at : var) : bool
+
+   :param:
+      world (var)
+      entity_world (var)
+      entity_id (uint)
+      context (var)
+      at (var)
+
+   :returns: bool
+
+.. das:function:: _world_entity_count(world : var) : uint
+
+   :param:
+      world (var)
+
+   :returns: uint
+
+.. das:function:: _world_find_all_count(world : var, name : var) : uint
+
+   :param:
+      world (var)
+      name (var)
+
+   :returns: uint
+
+.. das:function:: _world_find_all_at(world : var, name : var, index : uint) : uint
+
+   :param:
+      world (var)
+      name (var)
+      index (uint)
+
+   :returns: uint
+
+.. das:function:: _world_copy_component(world : var, dst_world : var, dst_id : uint, src_world : var, src_id : uint, type_id : uint, context : var, at : var) : bool
+
+   :param:
+      world (var)
+      dst_world (var)
+      dst_id (uint)
+      src_world (var)
+      src_id (uint)
+      type_id (uint)
+      context (var)
+      at (var)
+
+   :returns: bool
+
+.. das:function:: _world_defer_destroy_only(world : var, entity_world : var, entity_id : uint) : bool
+
+   :param:
+      world (var)
+      entity_world (var)
+      entity_id (uint)
+
+   :returns: bool
+
+.. das:function:: _world_defer_set_parent(world : var, child_world : var, child_id : uint, parent_world : var, parent_id : uint, keep_world : bool) : bool
+
+   :param:
+      world (var)
+      child_world (var)
+      child_id (uint)
+      parent_world (var)
+      parent_id (uint)
+      keep_world (bool)
+
+   :returns: bool
+
+.. das:function:: _world_defer_create_entity(world : var, name : var) : uint
+
+   :param:
+      world (var)
+      name (var)
+
+   :returns: uint
+
+.. das:function:: _time_fixed_elapsed() : float
+
+   :returns: float
+
+Scene system control
+--------------------
+
+.. das:function:: _enable_system(name : var) : bool
+
+   :param:
+      name (var)
+
+   :returns: bool
+
+.. das:function:: _disable_system(name : var) : bool
+
+   :param:
+      name (var)
+
+   :returns: bool
+
+.. das:function:: _system_enabled(element_id : var) : bool
+
+   :param:
+      element_id (var)
 
    :returns: bool
 
@@ -369,12 +782,67 @@ Editor viewport (global-state)
 Keyboard state
 --------------
 
-.. das:function:: is_key_pressed(camera : int) : bool
+.. das:function:: is_key_pressed(action : int) : bool
 
    :param:
-      camera (int)
+      action (int)
 
    :returns: bool
+
+Named input actions
+-------------------
+
+.. das:function:: action_bind_key(action : var, scancode : int) : bool
+
+   :param:
+      action (var)
+      scancode (int)
+
+   :returns: bool
+
+.. das:function:: action_bind_mouse(action : var, button : int) : bool
+
+   :param:
+      action (var)
+      button (int)
+
+   :returns: bool
+
+.. das:function:: action_unbind(action : var) : bool
+
+   :param:
+      action (var)
+
+   :returns: bool
+
+.. das:function:: action_pressed(action : var) : bool
+
+   :param:
+      action (var)
+
+   :returns: bool
+
+.. das:function:: action_just_pressed(neg_action : var) : bool
+
+   :param:
+      neg_action (var)
+
+   :returns: bool
+
+.. das:function:: action_just_released(neg_action : var) : bool
+
+   :param:
+      neg_action (var)
+
+   :returns: bool
+
+.. das:function:: action_axis(neg_action : var, pos_action : var) : float
+
+   :param:
+      neg_action (var)
+      pos_action (var)
+
+   :returns: float
 
 Camera field access
 -------------------
@@ -431,6 +899,32 @@ Camera field access
       camera (uint)
       aspect (float)
 
+Mouse pointer state
+-------------------
+
+.. das:function:: get_mouse_x() : float
+
+   :returns: float
+
+.. das:function:: get_mouse_y() : float
+
+   :returns: float
+
+.. das:function:: get_mouse_dx() : float
+
+   :returns: float
+
+.. das:function:: get_mouse_dy() : float
+
+   :returns: float
+
+.. das:function:: mouse_button_pressed(button : int) : bool
+
+   :param:
+      button (int)
+
+   :returns: bool
+
 Window size (global-state)
 --------------------------
 
@@ -450,26 +944,15 @@ Window size (global-state)
 
    :returns: uint
 
-Other
------
-
-.. das:function:: each_entity_id_with()
-
 Generic component type lookup
 -----------------------------
 
-.. das:function:: _get_component_type_id_by_name(entity : var) : uint
+.. das:function:: _get_component_type_id_by_name(camera_entity : var) : uint
 
    :param:
-      entity (var)
+      camera_entity (var)
 
    :returns: uint
-
-.. das:function:: _get_component_data(entity : uint, type_id : uint)
-
-   :param:
-      entity (uint)
-      type_id (uint)
 
 Raycasting (global-state)
 -------------------------
@@ -580,6 +1063,30 @@ Monotonic clock accessible from any system callback.
 
    :returns: float
 
+.. das:function:: _time_fixed_delta() : float
+
+   :returns: float
+
+.. das:function:: _time_frame_index()
+
+.. das:function:: _time_get_scale() : float
+
+   :returns: float
+
+.. das:function:: _time_set_scale(scale : float)
+
+   :param:
+      scale (float)
+
+.. das:function:: _time_is_paused() : bool
+
+   :returns: bool
+
+.. das:function:: _time_set_paused(entity : bool)
+
+   :param:
+      entity (bool)
+
 Physics: rigid body
 -------------------
 
@@ -648,6 +1155,18 @@ Name-keyed event declaration / emission
       event_name (var)
       system_name (var)
 
+.. das:function:: event_emit(event_name : var, payload : var)
+
+   :param:
+      event_name (var)
+      payload (var)
+
+.. das:function:: event_post(event_name : var, payload : var)
+
+   :param:
+      event_name (var)
+      payload (var)
+
 .. das:function:: event_declare_sink(event_name : var, system_name : var, handler_name : var)
 
    :param:
@@ -655,8 +1174,21 @@ Name-keyed event declaration / emission
       system_name (var)
       handler_name (var)
 
+.. das:function:: _event_declare_sink_current(event_name : var, handler_name : var)
+
+   :param:
+      event_name (var)
+      handler_name (var)
+
 Animation
 ---------
+
+.. das:function:: audio_is_playing(entity : uint) : bool
+
+   :param:
+      entity (uint)
+
+   :returns: bool
 
 .. das:function:: anim_play(entity : uint, clip : var)
 
@@ -693,6 +1225,51 @@ Animation
    :param:
       entity (uint)
       loop (bool)
+
+.. das:function:: anim_pause(entity : uint)
+
+   :param:
+      entity (uint)
+
+.. das:function:: anim_resume(entity : uint)
+
+   :param:
+      entity (uint)
+
+.. das:function:: anim_is_playing(entity : uint) : bool
+
+   :param:
+      entity (uint)
+
+   :returns: bool
+
+.. das:function:: anim_is_paused(entity : uint) : bool
+
+   :param:
+      entity (uint)
+
+   :returns: bool
+
+.. das:function:: anim_is_finished(entity : uint) : bool
+
+   :param:
+      entity (uint)
+
+   :returns: bool
+
+.. das:function:: anim_get_time(entity : uint) : float
+
+   :param:
+      entity (uint)
+
+   :returns: float
+
+.. das:function:: anim_get_duration(entity : uint) : float
+
+   :param:
+      entity (uint)
+
+   :returns: float
 
 .. das:function:: set_model(entity : uint, path : var)
 
@@ -751,5 +1328,17 @@ Event runtime wiring
    :param:
       event_name (var)
       system_name (var)
+      handler_name (var)
+
+.. das:function:: _event_connect_current(event_name : var, handler_name : var)
+
+   :param:
+      event_name (var)
+      handler_name (var)
+
+.. das:function:: _event_disconnect_current(event_name : var, handler_name : var)
+
+   :param:
+      event_name (var)
       handler_name (var)
 

@@ -244,6 +244,13 @@ physics_system::on_update (entt::registry &registry, double dt)
   if (!runtime.is_running ()) {
     return;
   }
+  // Gameplay pause freezes the simulation: no stepping, no body-control
+  // iterations, no sensor dispatch. Variable/late script passes (UI) and
+  // rendering keep running; unpausing resumes without a catch-up burst
+  // because the frame-phase accumulator is frozen while paused.
+  if (runtime.is_paused ()) {
+    return;
+  }
 
   run_registered_iterations (registry, dt);
 }

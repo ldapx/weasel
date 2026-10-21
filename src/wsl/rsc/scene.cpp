@@ -145,13 +145,42 @@ scene::update (double dt)
     return;
   }
 
-  for (std::unique_ptr<sys::ecs_system> &sys : systems) {
-    if (!sys) {
-      continue;
-    }
-
-    sys->update (&m_registry, dt);
+  // Deliver events queued by `event_post` before the update pass, so a
+  // post during frame N is visible to frame N+1 systems in both the
+  // serial and the scheduled paths.
+  if (m_runtime_ctx != nullptr) {
+    m_runtime_ctx->pump_posted_events ();
   }
+
+  const sys::frame_phase_config cfg
+      = (m_runtime_ctx != nullptr) ? m_runtime_ctx->frame_phase_defaults ()
+                                   : sys::frame_phase_config{};
+  const auto &hook = (m_runtime_ctx != nullptr)
+                         ? m_runtime_ctx->fixed_step_hook ()
+                         : comp::singl::runtime_context::fixed_step_hook_fn{};
+  const bool paused = m_runtime_ctx != nullptr && m_runtime_ctx->is_paused ();
+  sys::run_frame_phases (
+      dt, cfg, m_fixed_accumulator,
+      [&] (sys::frame_phase phase, double step_dt) {
+        for (std::unique_ptr<sys::ecs_system> &sys : systems) {
+          if (!sys) {
+            continue;
+          }
+          switch (phase) {
+          case sys::frame_phase::fixed:
+            sys->fixed_update (&m_registry, step_dt);
+            break;
+          case sys::frame_phase::late:
+            sys->late_update (&m_registry, step_dt);
+            break;
+          case sys::frame_phase::variable:
+          default:
+            sys->update (&m_registry, step_dt);
+            break;
+          }
+        }
+      },
+      hook, paused);
 }
 
 void
@@ -266,8 +295,7 @@ scene::destroy_entity_subtree (entt::entity root)
     std::unordered_set<entt::entity> sibling_chain;
     while (child != entt::null && m_registry.valid (child)
            && sibling_chain.insert (child).second) {
-      const auto *child_hierarchy
-          = m_registry.try_get<comp::hierarchy> (child);
+      const auto *child_hierarchy = m_registry.try_get<comp::hierarchy> (child);
       if (child_hierarchy == nullptr) {
         break;
       }
@@ -298,7 +326,7 @@ scene::destroy_entity_subtree (entt::entity root)
         if (previous == entt::null) {
           parent.first = child_hierarchy->next;
         } else if (auto *previous_hierarchy
-                       = m_registry.try_get<comp::hierarchy> (previous)) {
+                   = m_registry.try_get<comp::hierarchy> (previous)) {
           previous_hierarchy->next = child_hierarchy->next;
         }
         break;
@@ -418,10 +446,7 @@ scene::scene (comp::singl::runtime_context *runtime_ctx,
   ensure_context_bindings ();
 }
 
-scene::~scene ()
-{
-  shutdown_systems ();
-}
+scene::~scene () { shutdown_systems (); }
 
 scene::scene (scene &&other)
     : m_name (std::move (other.m_name)),

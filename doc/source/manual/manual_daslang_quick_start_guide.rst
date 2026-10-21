@@ -358,8 +358,7 @@ Modules and ``require``
 
 Code is organized into modules. A file declares its module with ``module name``
 and pulls in others with ``require``. Modules are how you will later bring in
-the engine's own bindings (for example ``require weasel_api`` and
-``require weasel_ecs`` in the ECS Programming section), but the mechanism
+the engine's own bindings (for example ``require weasel`` in game code), but the mechanism
 itself is plain language infrastructure:
 
 .. code-block:: das

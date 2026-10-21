@@ -135,7 +135,8 @@ public:
   // path. No-op once the module is fully loaded.
   void clear_cached_metadata ();
   void register_project_fs_roots (const std::filesystem::path &project_root,
-                                  const rsc::project &project);
+                                  const rsc::project &project,
+                                  wsl::das::das_engine &engine);
 
   /**
    * Resets the in-memory load state and deletes the on-disk registration

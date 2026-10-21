@@ -1,150 +1,129 @@
 options gen2
 module goban_system
 
-require weasel_api
-require weasel_ecs
-require weasel_helpers
+require weasel
 require math
 
-class System : EcsSystem {
-    m_fp_camera : uint = 0
-    m_goban_camera : uint = 0
+class System : GameSystem {
+    m_fp_camera : Entity = Entity()
+    m_goban_camera : Entity = Entity()
     m_is_black_turn : bool = true
 
-    def override on_init() : void {
-        refresh_cameras()
-        set_relative_mouse_mode(true)
-        hide_cursor()
+    def override on_start(var ctx : SystemContext) : void {
+        refresh_cameras(ctx)
+        ctx.input.bind_key("ui_cancel", int(SDL_SCANCODE_ESCAPE))
+        ctx.input.bind_mouse("place", int(SDL_BUTTON_LEFT))
+        ctx.input.bind_mouse("remove", int(SDL_BUTTON_RIGHT))
+        ctx.input.set_mouse_captured(true)
+        ctx.input.set_cursor_visible(false)
     }
 
-    def override on_inactive() : void {
-        set_relative_mouse_mode(false)
+    def override on_stop(var ctx : SystemContext) : void {
+        ctx.input.set_mouse_captured(false)
     }
 
-    // Input is read from the pull-only message bus each frame (the
-    // `on_event` callback was removed in favour of `mouse_button_at`,
-    // `key_pressed_at`, ... accessors).
-    def process_input() : void {
-        for (i in range(key_pressed_count())) {
-            if (key_pressed_at(i).scancode == uint(SDL_SCANCODE_ESCAPE)) {
-                refresh_cameras()
-                var active = get_active_camera()
-                if (active == m_goban_camera) {
-                    switch_to_camera(m_fp_camera)
-                }
+    // Input uses named actions bound in on_start: "ui_cancel" (Escape),
+    // "place" (left button press) and "remove" (right button press).
+    // just_pressed reports this frame's press edges from the message bus.
+    def process_input(var ctx : SystemContext) : void {
+        if (ctx.input.just_pressed("ui_cancel")) {
+            refresh_cameras(ctx)
+            var active = active_camera(ctx.world)
+            if (active == m_goban_camera) {
+                switch_to_camera(ctx, m_fp_camera)
             }
         }
 
-        for (i in range(mouse_button_count())) {
-            if (!mouse_button_at(i).down) continue
+        if (ctx.input.just_pressed("place")) {
+            var mp = ctx.input.mouse_position()
+            refresh_cameras(ctx)
+            var active = active_camera(ctx.world)
+            if (active != m_goban_camera) {
+                switch_to_camera(ctx, m_goban_camera)
+            } else {
+                place_stone_at(ctx, int(mp.x), int(mp.y))
+            }
+        }
 
-            if (mouse_button_at(i).button == int(SDL_BUTTON_LEFT)) {
-                refresh_cameras()
-                var active = get_active_camera()
-                if (active != m_goban_camera) {
-                    switch_to_camera(m_goban_camera)
-                } else {
-                    place_stone_at(mouse_button_at(i).x, mouse_button_at(i).y)
-                }
-            } elif (mouse_button_at(i).button == int(SDL_BUTTON_RIGHT)) {
-                refresh_cameras()
-                var active = get_active_camera()
-                if (active == m_goban_camera) {
-                    remove_stone_at(mouse_button_at(i).x, mouse_button_at(i).y)
-                }
+        if (ctx.input.just_pressed("remove")) {
+            var mp = ctx.input.mouse_position()
+            refresh_cameras(ctx)
+            var active = active_camera(ctx.world)
+            if (active == m_goban_camera) {
+                remove_stone_at(ctx, int(mp.x), int(mp.y))
             }
         }
     }
 
-    def override on_update(dt : float) : void {
-        refresh_cameras()
-        process_input()
+    def override update(var ctx : SystemContext; dt : float) : void {
+        refresh_cameras(ctx)
+        process_input(ctx)
 
-        var active = get_active_camera()
+        var active = active_camera(ctx.world)
         var on_fp = (active == m_fp_camera)
         var on_goban = (active == m_goban_camera)
 
         if (on_fp) {
-            if (cursor_visible()) {
-                hide_cursor()
+            if (ctx.input.is_cursor_visible()) {
+                ctx.input.set_cursor_visible(false)
             }
         } elif (on_goban) {
-            if (!cursor_visible()) {
-                show_cursor()
+            if (!ctx.input.is_cursor_visible()) {
+                ctx.input.set_cursor_visible(true)
             }
         }
     }
 
-    def refresh_cameras() : void {
-        if (m_fp_camera == 0 || !entity_valid(m_fp_camera)) {
-            m_fp_camera = find_entity_by_name("FP Camera")
+    def refresh_cameras(var ctx : SystemContext) : void {
+        if (is_null(m_fp_camera) || !ctx.world.is_alive(m_fp_camera)) {
+            m_fp_camera = ctx.world.find_by_name("FP Camera")
         }
-        if (m_goban_camera == 0 || !entity_valid(m_goban_camera)) {
-            m_goban_camera = find_entity_by_name("Goban Camera")
+        if (is_null(m_goban_camera) || !ctx.world.is_alive(m_goban_camera)) {
+            m_goban_camera = ctx.world.find_by_name("Goban Camera")
         }
     }
 
-    def switch_to_camera(camera : uint) : void {
-        set_active_camera(camera)
+    def switch_to_camera(var ctx : SystemContext; camera : Entity) : void {
+        set_active_camera(ctx.world, camera)
 
         var fp_active = (camera == m_fp_camera)
-        set_relative_mouse_mode(fp_active)
+        ctx.input.set_mouse_captured(fp_active)
         if (fp_active) {
-            hide_cursor()
+            ctx.input.set_cursor_visible(false)
         } else {
-            show_cursor()
+            ctx.input.set_cursor_visible(true)
         }
     }
 
-    def get_grid_at(mx : int, my : int) : tuple<int,int,bool> {
-        refresh_cameras()
+    def get_grid_at(var ctx : SystemContext; mx : int; my : int) : tuple<int,int,bool> {
+        refresh_cameras(ctx)
 
-        if (m_goban_camera == 0) return (0, 0, false)
-        if (!has_component(TYPE_CAMERA(), m_goban_camera)) return (0, 0, false)
-        if (!has_component(TYPE_WORLD_TRANSFORM(), m_goban_camera)) return (0, 0, false)
+        if (is_null(m_goban_camera)) return (0, 0, false)
+        if (!has(ctx.world, m_goban_camera, Camera())) return (0, 0, false)
+        if (!has(ctx.world, m_goban_camera, WorldTransform())) return (0, 0, false)
 
-        refresh_window_size()
-        var w = get_window_width()
-        var h = get_window_height()
-        if (w == 0 || h == 0) return (0, 0, false)
-
-        refresh_editor_viewport()
-        var img_min_x = get_editor_img_min_x()
-        var img_min_y = get_editor_img_min_y()
-        var img_size_x = get_editor_img_size_x()
-        var img_size_y = get_editor_img_size_y()
+        var ws = window_size()
+        if (ws.x <= 0.0 || ws.y <= 0.0) return (0, 0, false)
 
         var mouse_x = float(mx)
         var mouse_y = float(my)
 
-        if (img_size_x > 0.0 && img_size_y > 0.0) {
-            if (mouse_x < img_min_x || mouse_x > img_min_x + img_size_x) return (0, 0, false)
-            if (mouse_y < img_min_y || mouse_y > img_min_y + img_size_y) return (0, 0, false)
-
-            var nx = (mouse_x - img_min_x) / img_size_x
-            var ny = (mouse_y - img_min_y) / img_size_y
-            mouse_x = nx * float(w)
-            mouse_y = ny * float(h)
-        }
-
-        if (!make_pick_ray(m_goban_camera, mouse_x, mouse_y, 0.0, 0.0, float(w), float(h))) {
+        var (origin, dir, ray_ok) = pick_ray(ctx.world, m_goban_camera,
+                                            mouse_x, mouse_y,
+                                            0.0, 0.0, ws.x, ws.y)
+        if (!ray_ok) {
             return (0, 0, false)
         }
 
-        var ox = get_ray_origin_x()
-        var oy = get_ray_origin_y()
-        var oz = get_ray_origin_z()
-        var dx = get_ray_dir_x()
-        var dy = get_ray_dir_y()
-        var dz = get_ray_dir_z()
-
-        if (!ray_plane_intersect(ox, oy, oz, dx, dy, dz, 0.0, 2.21, 0.0, 0.0, 1.0, 0.0)) {
+        var (hit, hit_ok) = ray_plane_hit(origin.x, origin.y, origin.z,
+                                          dir.x, dir.y, dir.z,
+                                          0.0, 2.21, 0.0, 0.0, 1.0, 0.0)
+        if (!hit_ok) {
             return (0, 0, false)
         }
 
-        var hit_x = get_hit_x()
-        var hit_y = get_hit_y()
-        var hit_z = get_hit_z()
+        var hit_x = hit.x
+        var hit_z = hit.z
 
         var board_min = -2.21
         var board_max = 2.21
@@ -163,8 +142,8 @@ class System : EcsSystem {
         return (grid_x, grid_z, true)
     }
 
-    def place_stone_at(mx : int, my : int) : void {
-        var (grid_x, grid_z, valid) = get_grid_at(mx, my)
+    def place_stone_at(var ctx : SystemContext; mx : int; my : int) : void {
+        var (grid_x, grid_z, valid) = get_grid_at(ctx, mx, my)
         if (!valid) return
 
         var board_min = -2.21
@@ -183,23 +162,23 @@ class System : EcsSystem {
 
         var stone_name = "{color} Stone ({grid_x},{grid_z})"
 
-        var existing_black = find_entity_by_name("Black Stone ({grid_x},{grid_z})")
-        if (existing_black != 0 && !entity_is_null(existing_black)) {
-            entity_destroy(existing_black)
+        var existing_black = ctx.world.find_by_name("Black Stone ({grid_x},{grid_z})")
+        if (!is_null(existing_black)) {
+            ctx.world.destroy(existing_black)
         }
 
-        var existing_white = find_entity_by_name("White Stone ({grid_x},{grid_z})")
-        if (existing_white != 0 && !entity_is_null(existing_white)) {
-            entity_destroy(existing_white)
+        var existing_white = ctx.world.find_by_name("White Stone ({grid_x},{grid_z})")
+        if (!is_null(existing_white)) {
+            ctx.world.destroy(existing_white)
         }
 
-        var new_stone = instantiate_prefab(prefab_path)
-        if (new_stone == 0 || entity_is_null(new_stone)) return
+        var new_stone = instantiate_prefab(ctx.world, prefab_path)
+        if (is_null(new_stone)) return
 
-        set_entity_name(new_stone, stone_name)
+        ctx.world.set_name(new_stone, stone_name)
 
-        if (has_component(TYPE_TRANSFORM(), new_stone)) {
-            var transform = get_component_or(new_stone, Transform())
+        if (has(ctx.world, new_stone, Transform())) {
+            var transform = get(ctx.world, new_stone, Transform())
             transform.position = float3(world_x, 2.21, world_z)
             transform.scale = float3(2.0, 2.0, 2.0)
         }
@@ -207,19 +186,19 @@ class System : EcsSystem {
         m_is_black_turn = !m_is_black_turn
     }
 
-    def remove_stone_at(mx : int, my : int) : void {
-        var (grid_x, grid_z, valid) = get_grid_at(mx, my)
+    def remove_stone_at(var ctx : SystemContext; mx : int; my : int) : void {
+        var (grid_x, grid_z, valid) = get_grid_at(ctx, mx, my)
         if (!valid) return
 
-        var existing_black = find_entity_by_name("Black Stone ({grid_x},{grid_z})")
-        if (existing_black != 0 && !entity_is_null(existing_black)) {
-            entity_destroy(existing_black)
+        var existing_black = ctx.world.find_by_name("Black Stone ({grid_x},{grid_z})")
+        if (!is_null(existing_black)) {
+            ctx.world.destroy(existing_black)
             return
         }
 
-        var existing_white = find_entity_by_name("White Stone ({grid_x},{grid_z})")
-        if (existing_white != 0 && !entity_is_null(existing_white)) {
-            entity_destroy(existing_white)
+        var existing_white = ctx.world.find_by_name("White Stone ({grid_x},{grid_z})")
+        if (!is_null(existing_white)) {
+            ctx.world.destroy(existing_white)
             return
         }
     }

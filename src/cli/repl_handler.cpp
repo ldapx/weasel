@@ -3149,9 +3149,14 @@ command_executor::cmd_sys (const std::vector<std::string> &tokens)
     // invalid size", "double free or corruption", "munmap_chunk(): invalid
     // pointer", exit 134).  comp create / singl create already emit it.
     das_text << "options gen2\nmodule " << file_stem << "\n"
-             << "require weasel_ecs\nrequire weasel_helpers\n\n"
-             << "class System : EcsSystem {\n"
-             << "    def override on_update(dt : float) : void {\n"
+             << "require weasel\n\n"
+             << "class System : GameSystem {\n"
+             << "    def override on_start(var ctx : SystemContext) : void {\n"
+             << "    }\n"
+             << "    def override update(var ctx : SystemContext; dt : float) "
+                ": void {\n"
+             << "    }\n"
+             << "    def override on_stop(var ctx : SystemContext) : void {\n"
              << "    }\n"
              << "}\n";
     if (!write_text_file (das_path, das_text.str ())) {

@@ -45,10 +45,11 @@ das_struct_layout_hash (const ::das::StructInfo *type)
       hash *= fnv_prime;
     }
   };
-  const auto hash_value = [&] (auto value) { hash_bytes (&value, sizeof value); };
+  const auto hash_value
+      = [&] (auto value) { hash_bytes (&value, sizeof value); };
 
-  const auto hash_struct = [&] (const auto &self,
-                                const ::das::StructInfo *structure) -> bool {
+  const auto hash_struct
+      = [&] (const auto &self, const ::das::StructInfo *structure) -> bool {
     if (structure == nullptr
         || (structure->count != 0 && structure->fields == nullptr)
         || !active.insert (structure).second) {
@@ -74,9 +75,8 @@ das_struct_layout_hash (const ::das::StructInfo *type)
           active.erase (structure);
           return false;
         }
-        hash_bytes (field->dim,
-                    static_cast<std::size_t> (field->dimSize)
-                        * sizeof (std::uint32_t));
+        hash_bytes (field->dim, static_cast<std::size_t> (field->dimSize)
+                                    * sizeof (std::uint32_t));
       }
       if (field->type == ::das::Type::tStructure
           && !self (self, field->structType)) {
@@ -235,7 +235,7 @@ setup_engine_faccess (smart_ptr<FsFileAccess> &faccess)
   faccess->introduceDaslib ();
 
   // Add the engine's module directory to ProjectFsFileAccess so that
-  // `require weasel_helpers` can find weasel_helpers.das in interpreted mode.
+  // `require weasel` can find weasel.das in interpreted mode.
   auto engine_modules
       = std::string (WEASEL_SOURCE_DIR) + "/src/wsl/das/modules";
   static_cast<ProjectFsFileAccess *> (faccess.get ())
@@ -675,7 +675,7 @@ aot_compile_file (const std::string &input, const std::string &output,
     // NOTE: simulate the input with aot=FALSE (matching `daslang -aot`, which
     // compiles/simulates the script normally and only emits AOT in run_aot).
     // Setting aot=true here would force AOT-link verification during simulate
-    // and fail every weasel_api/weasel_helpers function that has no in-tree
+    // and fail every weasel_api function that has no in-tree
     // AOT body registered.
     auto input_prog = ::das::compileDaScript (input.c_str (), faccess, tout,
                                               module_group, input_policies);
@@ -1769,7 +1769,7 @@ leave_script (const char *) noexcept
 
 bool
 wsl::das::run_protected_call (::das::Context *, const char *,
-                             const std::function<void ()> &, das_error &error)
+                              const std::function<void ()> &, das_error &error)
 {
   error.message = "daScript support is not enabled";
   return false;

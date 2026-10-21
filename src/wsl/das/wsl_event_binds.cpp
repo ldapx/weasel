@@ -328,7 +328,8 @@ wsl_message_count (const char *name)
   return static_cast<int> (buf->bytes.size () / buf->element_size);
 }
 void
-wsl_message_for_each (const char *name, const ::das::TBlock<void, vec4f> &blk,
+wsl_message_for_each (const char *name,
+                      const ::das::TBlock<void, uint32_t> &blk,
                       ::das::Context *context, ::das::LineInfoArg *at)
 {
   auto *record = find_message_type (name);
@@ -342,13 +343,41 @@ wsl_message_for_each (const char *name, const ::das::TBlock<void, vec4f> &blk,
     return;
   }
 
+  // Drives the block with the element index, mirroring
+  // each_world_entity_with: the payload itself is read through
+  // message_at (a value copy), so the block never aliases the
+  // published buffer that the next drain recycles.
   const std::size_t count = buf->bytes.size () / buf->element_size;
   for (std::size_t i = 0; i < count; ++i) {
-    void *element = buf->bytes.data () + i * buf->element_size;
-    // Struct payloads pass by reference through the daslang ABI; a raw
-    // pointer in the argument slot is what a struct block parameter expects.
-    ::das::das_invoke<void>::invoke<void *> (context, at, blk, element);
+    ::das::das_invoke<void>::invoke<uint32_t> (context, at, blk,
+                                               static_cast<uint32_t> (i));
   }
+}
+
+/**
+ * Returns a pointer to the published bytes of message `index`, or nullptr
+ * when the type is unknown, unpublished, or the index is out of range.
+ * The daslang `message_at` wrapper copies the bytes out, so callers never
+ * hold the recycled buffer.
+ */
+void *
+wsl_message_at_data (const char *name, uint32_t index)
+{
+  auto *record = find_message_type (name);
+  auto *bus = wsl::das::wsl_api_get_active_message_bus ();
+  if (record == nullptr || bus == nullptr) {
+    return nullptr;
+  }
+  auto *buf = bus->find_published (record->id);
+  if (buf == nullptr || buf->bytes.empty () || buf->element_size == 0) {
+    return nullptr;
+  }
+  const std::size_t count = buf->bytes.size () / buf->element_size;
+  if (static_cast<std::size_t> (index) >= count) {
+    return nullptr;
+  }
+  return buf->bytes.data ()
+         + static_cast<std::size_t> (index) * buf->element_size;
 }
 
 // ── Script message subscriptions ──
@@ -862,6 +891,11 @@ register_event_message_bindings (::das::Module &module,
       module, lib, "for_each_message", ::das::SideEffects::invoke,
       "wsl::das::wsl_message_for_each")
       ->args ({ "name", "block", "context", "at" });
+
+  addExtern<DAS_BIND_FUN (wsl_message_at_data)> (
+      module, lib, "_message_at_data", ::das::SideEffects::accessExternal,
+      "wsl::das::wsl_message_at_data")
+      ->args ({ "name", "index" });
 
   addExtern<DAS_BIND_FUN (wsl_message_subscribe)> (
       module, lib, "message_subscribe", ::das::SideEffects::modifyExternal,

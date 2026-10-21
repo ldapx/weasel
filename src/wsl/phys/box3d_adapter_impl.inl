@@ -465,6 +465,8 @@ world::create_body (const body_desc &desc)
 
   b3ShapeDef shape_definition = b3DefaultShapeDef ();
   shape_definition.density = desc.density;
+  shape_definition.baseMaterial.friction = desc.friction;
+  shape_definition.baseMaterial.restitution = desc.restitution;
   shape_definition.isSensor = desc.sensor;
   shape_definition.enableSensorEvents = desc.sensor;
 
@@ -531,6 +533,76 @@ world::set_body_transform (body_handle body, vector3 position,
   if (is_body_valid (body)) {
     b3Body_SetTransform (decode_body (body), to_box3d (position),
                          to_box3d (rotation));
+  }
+}
+
+namespace
+{
+
+/**
+ * Every body built by this adapter owns exactly one shape, so surface
+ * tweaks address the body's first shape. Returns a null shape id when the
+ * body is invalid or shapeless; callers must check with b3Shape_IsValid.
+ */
+b3ShapeId
+first_body_shape (b3BodyId body)
+{
+  b3ShapeId shape = b3_nullShapeId;
+  if (b3Body_IsValid (body) && b3Body_GetShapes (body, &shape, 1) == 1) {
+    return shape;
+  }
+  return b3_nullShapeId;
+}
+
+} // namespace
+
+void
+world::set_body_surface_properties (body_handle body, float friction,
+                                    float restitution)
+{
+  if (!is_body_valid (body)) {
+    return;
+  }
+  const b3ShapeId shape = first_body_shape (decode_body (body));
+  if (b3Shape_IsValid (shape)) {
+    b3Shape_SetFriction (shape, friction);
+    b3Shape_SetRestitution (shape, restitution);
+  }
+}
+
+float
+world::body_surface_friction (body_handle body) const
+{
+  if (!is_body_valid (body)) {
+    return 0.2F;
+  }
+  const b3ShapeId shape = first_body_shape (decode_body (body));
+  return b3Shape_IsValid (shape) ? b3Shape_GetFriction (shape) : 0.2F;
+}
+
+float
+world::body_surface_restitution (body_handle body) const
+{
+  if (!is_body_valid (body)) {
+    return 0.0F;
+  }
+  const b3ShapeId shape = first_body_shape (decode_body (body));
+  return b3Shape_IsValid (shape) ? b3Shape_GetRestitution (shape) : 0.0F;
+}
+
+vector3
+world::body_linear_velocity (body_handle body) const
+{
+  return is_body_valid (body)
+             ? from_box3d (b3Body_GetLinearVelocity (decode_body (body)))
+             : vector3{};
+}
+
+void
+world::set_body_linear_velocity (body_handle body, vector3 velocity)
+{
+  if (is_body_valid (body)) {
+    b3Body_SetLinearVelocity (decode_body (body), to_box3d (velocity));
   }
 }
 

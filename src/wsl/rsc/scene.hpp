@@ -214,6 +214,13 @@ private:
 
   bool m_initialized = false;
 
+  /**
+   * Leftover fixed-step time for the frame-phase driver. Lives on the
+   * scene so serial scene::update and the scheduler path each keep their
+   * own accumulator (only one drives a given registry in practice).
+   */
+  double m_fixed_accumulator = 0.0;
+
   comp::singl::runtime_context *m_runtime_ctx;
   comp::singl::editor_context *m_editor_ctx;
 };

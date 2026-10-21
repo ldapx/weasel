@@ -95,6 +95,66 @@ TEST_CASE ("debug draw appends instead of replacing the caller's lines")
   CHECK (lines.front ().rgba == 0x123456U);
 }
 
+// Surface properties must reach the backend shape: creation-time values
+// are readable back, runtime updates apply, and invalid bodies degrade to
+// the component defaults without crashing.
+TEST_CASE ("surface properties round-trip through the backend shape")
+{
+  engine physics;
+
+  body_desc box;
+  box.motion = motion_type::Static;
+  box.shape = shape_type::box;
+  box.friction = 0.7F;
+  box.restitution = 0.4F;
+  const body_id id = physics.create_body (box);
+  REQUIRE (is_valid_body_id (id));
+
+  CHECK (physics.body_surface_friction (id) == doctest::Approx (0.7F));
+  CHECK (physics.body_surface_restitution (id) == doctest::Approx (0.4F));
+
+  physics.set_body_surface_properties (id, 0.1F, 0.9F, 0);
+  CHECK (physics.body_surface_friction (id) == doctest::Approx (0.1F));
+  CHECK (physics.body_surface_restitution (id) == doctest::Approx (0.9F));
+
+  // Invalid bodies degrade to the component defaults.
+  CHECK (physics.body_surface_friction (null_body_id)
+         == doctest::Approx (0.2F));
+  CHECK (physics.body_surface_restitution (null_body_id)
+         == doctest::Approx (0.0F));
+  physics.set_body_surface_properties (null_body_id, 1.0F, 1.0F, 0);
+}
+
+// Linear velocity round-trips through the backend body: setting applies
+// immediately, reads reflect the set value, and invalid bodies degrade to
+// zero without crashing.
+TEST_CASE ("linear velocity round-trips through the backend body")
+{
+  engine physics;
+
+  body_desc box;
+  box.motion = motion_type::Dynamic;
+  box.shape = shape_type::box;
+  const body_id id = physics.create_body (box);
+  REQUIRE (is_valid_body_id (id));
+
+  // A fresh dynamic body starts at rest.
+  CHECK (physics.get_body_velocity (id).x == doctest::Approx (0.0F));
+  CHECK (physics.get_body_velocity (id).y == doctest::Approx (0.0F));
+  CHECK (physics.get_body_velocity (id).z == doctest::Approx (0.0F));
+
+  physics.set_body_velocity (id, { 1.5F, -2.0F, 0.5F });
+  const vector3 v = physics.get_body_velocity (id);
+  CHECK (v.x == doctest::Approx (1.5F));
+  CHECK (v.y == doctest::Approx (-2.0F));
+  CHECK (v.z == doctest::Approx (0.5F));
+
+  // Invalid bodies degrade to zero and ignore writes.
+  CHECK (physics.get_body_velocity (null_body_id).x
+         == doctest::Approx (0.0F));
+  physics.set_body_velocity (null_body_id, { 9.0F, 9.0F, 9.0F });
+}
+
 // A world with nothing in it must not fabricate geometry.
 TEST_CASE ("debug draw stays empty for an empty world")
 {

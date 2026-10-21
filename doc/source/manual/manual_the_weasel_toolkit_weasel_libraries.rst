@@ -35,16 +35,19 @@ written in daScript. They are oriented toward **application-level** code: the
 systems, components and glue that make up a playable project, rather than the
 engine internals.
 
-The bindings are split into the following modules:
+The bindings are exposed through one gameplay module:
 
-- **weasel_ecs** -- the ECS system base class and helpers for writing daslang
-  systems (``on_init``, ``on_update``, ``on_event``, ``on_inactive``) and
-  declaring components.
-- **weasel_api** -- the core engine API exposed to daScript: entity
-  management, transforms, scene queries, events, window operations, raycasting
-  and more.
-- **weasel_helpers** -- convenience utilities and helpers that simplify common
-  daslang-side tasks when working with the engine.
+- **weasel** -- the gameplay facade: world-scoped entities, the
+  ``GameSystem`` base class (``class System : GameSystem`` with
+  ``on_start`` / ``update`` / ``fixed_update`` / ``late_update`` /
+  ``on_stop``), typed component access, queries, input, time, events,
+  and engine services.
+- **weasel_editor** -- editor-only helpers (viewport size/refresh).
+  Gameplay scripts must never require it.
+
+(``weasel_api`` is the underlying native module; game code reaches it
+only through ``weasel``. The legacy ``weasel_helpers`` / ``weasel_ecs``
+das modules were removed after the facade absorbed them.)
 
 Together these modules let authors drive the full libwsl API from daScript
 without dropping down into C++.

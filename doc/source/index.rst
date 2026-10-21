@@ -10,21 +10,31 @@ Weasel Engine Documentation
    stdlib/index
    cpp/index
 
-The Weasel engine exposes its API to daScript through two modules:
+The Weasel engine exposes its API to daScript through one gameplay module:
 
-- **weasel_api** -- Core engine functions: entity management, transforms,
-  scene queries, events, window operations, and raycasting.
-- **weasel_ecs** -- ECS system base class for writing game logic in daScript.
+- **weasel** -- the gameplay facade: world-scoped entities, the
+  ``GameSystem`` base class, typed component access, queries, input,
+  time, events, and engine services. (``weasel_editor`` holds
+  editor-only helpers; ``weasel_api`` is the underlying native module,
+  reached only through the facade.)
 
 Quick Example
 -------------
 
-.. code-block:: cpp
+.. code-block:: das
 
-    require weasel_api
+    require weasel
 
-    def on_update(dt : float)
-        let e = entity_create()
-        add_component(e, Transform())
-        let t = get_component_or(e, Transform())
-        t.position = float3(1.0, 2.0, 3.0)
+    class System : GameSystem {
+        def override on_start(var ctx : SystemContext) : void {
+            var e = ctx.world.create_entity()
+            ctx.world.set_name(e, "Player")
+            add(ctx.world, e, Transform())
+        }
+
+        def override update(var ctx : SystemContext; dt : float) : void {
+            query(ctx.world) $(t : Transform&) {
+                t.position.y += 1.0 * dt
+            }
+        }
+    }

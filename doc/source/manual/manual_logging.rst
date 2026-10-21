@@ -67,25 +67,32 @@ positional formatting:
 Logging from daslang
 --------------------
 
-In daScript (for example inside a system) four helpers are available through
-the ``weasel_api`` module. They all route to the **sys** logger:
+In daScript (for example inside a system) use ``ctx.log``. The ``Logger``
+methods route to the **sys** logger:
 
-- ``log_info("message")``
-- ``log_debug("message")``
-- ``log_warn("message")``
-- ``log_error("message")``
+- ``debug(message)`` / ``info(message)`` / ``warn(message)`` /
+  ``error(message)`` / ``trace(message)``
+- ``debug_fields(message, fields)`` (and ``info_`` / ``warn_`` /
+  ``error_`` / ``trace_`` variants) for structured fields
 
 .. code-block:: das
 
-   def on_init {
-       log_info("My system initialized!")
-   }
+   class System : GameSystem {
+       def override on_start(var ctx : SystemContext) : void {
+           ctx.log.info("My system initialized!")
+       }
 
-   def on_update(dt : float) {
-       log_debug("frame dt = {dt}")
-       if (health <= 0) {
-           log_error("entity died")
+       def override update(var ctx : SystemContext; dt : float) : void {
+           var fields = LogFields()
+           fields.add("dt", "{dt}")
+           ctx.log.debug_fields("frame", fields)
        }
    }
+
+``LogFields`` is an ordered key/value map, so ``warn_fields("slow frame",
+fields)`` renders deterministically as ``slow frame k1=v1 k2=v2``.
+There is no debug drawing or profiling scope API yet; see the
+:doc:`Tracy Quick Start Guide <manual_profiling_tracy_quick_start_guide>`
+for CPU-side profiling.
 
 These are the same routines used throughout the ECS Programming examples.

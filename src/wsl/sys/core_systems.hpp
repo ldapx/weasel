@@ -129,6 +129,12 @@ private:
   std::vector<entt::id_type> m_cached_core_ids;
 
   /**
+   * Leftover fixed-step time for the frame-phase driver. Serial
+   * scene::update keeps its own accumulator per scene.
+   */
+  double m_fixed_accumulator = 0.0;
+
+  /**
    * Project whose window configuration (D7) was last applied to the
    * standalone game window. Standalone builds only; the editor preserves its
    * host window settings.

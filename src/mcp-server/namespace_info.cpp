@@ -175,37 +175,48 @@ The file stem defines the registered display name:
   foo_bar_system.das → type 'foo_bar_system' → display 'Foo Bar System'
 (underscores become spaces, first letter capitalized).
 
-── Daslang system interface (weasel_ecs module) ──
+── Daslang system interface (weasel module) ──
 
-class EcsSystem {
-    def on_init() : void { }          // once after load
-    def on_update(dt : float) : void { }   // every frame while playing
-    def on_inactive() : void { }      // cleanup
-}
+Gameplay scripts import one module and extend GameSystem (the engine
+instantiates the class literally named `System`):
 
-Input is pull-based: read keyboard/mouse each frame with helpers from
-the weasel_api module (e.g. is_key_pressed(scancode)).
+  options gen2
+  require weasel
+
+  class System : GameSystem {
+      def override on_start(var ctx : SystemContext) : void { }
+      def override update(var ctx : SystemContext; dt : float) : void { }
+      def override fixed_update(var ctx : SystemContext; fixed_dt : float) : void { }
+      def override late_update(var ctx : SystemContext; dt : float) : void { }
+      def override on_stop(var ctx : SystemContext) : void { }
+
+Input is pull-based: read keyboard/mouse each frame through ctx.input
+(e.g. polled state) or named action maps (bind_key/bind_mouse once,
+then pressed/just_pressed/just_released/value).
 
 ── Minimal movement/physics example ──
 
   options gen2
-  require weasel_ecs
-  require weasel_helpers
+  require weasel
 
-  class System : EcsSystem {
-      def override on_update(dt : float) : void {
-          each_entity_id_with([ TYPE_RIGID_BODY() ]) <| $(e : uint) {
-              apply_force(e, 0.0, 6500.0, 0.0) // ~g lift for a 524 kg ball
+  class System : GameSystem {
+      def override on_start(var ctx : SystemContext) : void {
+          ctx.input.bind_key("lift", 44)  // Space scancode
+      }
+      def override fixed_update(var ctx : SystemContext; fixed_dt : float) : void {
+          if ctx.input.just_pressed("lift") {
+              query(ctx.world) $(t : Transform&; rb : RigidBody&) {
+                  // ~g lift for a 524 kg ball (density 1000 kg/m^3)
+                  apply_impulse(ctx.world, entity, float3(0.0, 6500.0, 0.0))
+              }
           }
       }
   }
 
 Notes:
-  • each_entity_id_with([TYPE_X(), ...]) visits entities that own ALL
-    listed components and passes the entity id to the block — use it
-    when you need the id (apply_force, apply_impulse, ...).
-  • query() $(t : Transform&) { t.position.y += dt } binds LIVE
-    component references for in-place writes when no id is needed.
+  • query(world) $(t : Transform&; ...) visits entities owning ALL
+    listed components and binds live references for in-place writes.
+    Inside the block, `entity` is the world-scoped Entity handle.
   • Physics bodies use density 1000 kg/m^3: a builtin://sphere
     (radius 0.5) masses ~524 kg, so forces must be in the thousands.
 

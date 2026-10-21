@@ -14,6 +14,8 @@ subsystem available to authors building games and applications with Weasel.
    manual_application_build_playback
    manual_daslang_quick_start_guide
    manual_ecs_programming
+   manual_daslang_api_migration
+   manual_daslang_api_contract
    manual_input
    manual_scene_and_prefabs
    manual_resources

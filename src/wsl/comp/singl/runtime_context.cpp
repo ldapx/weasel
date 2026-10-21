@@ -467,4 +467,69 @@ comp::singl::runtime_context::get_active_physics_engine ()
   return physics->ensure_engine ();
 }
 
+sys::frame_phase_config
+comp::singl::runtime_context::frame_phase_defaults () const
+{
+  sys::frame_phase_config cfg;
+  // try_get_active_physics_engine is non-const (lazy engine creation is
+  // possible); read through the manager without creating anything.
+  if (const auto *physics = get_active_physics_manager ()) {
+    if (auto *engine = physics->try_engine ()) {
+      const double step = engine->get_fixed_step ();
+      if (step > 0.0) {
+        cfg.fixed_step = step;
+      }
+      cfg.max_frame_time = engine->get_max_frame_time ();
+      cfg.max_substeps = engine->get_max_substeps ();
+    }
+  }
+  return cfg;
+}
+
+bool
+comp::singl::runtime_context::post_event (entt::id_type type_id,
+                                          const void *data, std::size_t size,
+                                          std::uint64_t layout_hash)
+{
+  if (type_id == 0 || data == nullptr || size == 0) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock (m_posted_events_mutex);
+  if (m_posted_events.size () >= max_posted_events) {
+    wsl::log::sys ()->warn ("post_event: queue full ({}), dropping event {:#x}",
+                            max_posted_events,
+                            static_cast<std::uint64_t> (type_id));
+    return false;
+  }
+  posted_event queued{};
+  queued.type = type_id;
+  queued.bytes.assign (static_cast<const char *> (data),
+                       static_cast<const char *> (data) + size);
+  queued.size = size;
+  queued.layout_hash = layout_hash;
+  m_posted_events.push_back (std::move (queued));
+  return true;
+}
+
+void
+comp::singl::runtime_context::pump_posted_events ()
+{
+  std::vector<posted_event> pending;
+  {
+    std::lock_guard<std::mutex> lock (m_posted_events_mutex);
+    if (m_posted_events.empty ()) {
+      return;
+    }
+    if (m_scene_manager.get_active () == nullptr) {
+      return;
+    }
+    pending = std::move (m_posted_events);
+    m_posted_events.clear ();
+  }
+  for (const auto &event : pending) {
+    m_event_hub->dispatch_by_id (event.type, event.bytes.data (), event.size,
+                                 event.layout_hash);
+  }
+}
+
 } // namespace wsl

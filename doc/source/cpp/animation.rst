@@ -74,25 +74,40 @@ below relies on.
 Scripting
 ---------
 
-The ``weasel_ecs`` daslang module exposes the same operations:
+The ``weasel`` facade exposes the same operations as checked
+world-scoped functions (``play_animation(world, entity, ...)``,
+``crossfade_animation(...)``, ``set_animation_speed/time/loop``,
+``stop_animation``); the raw natives below work the same way with a raw
+entity id and are what the facade calls internally:
 
 .. code-block:: das
 
-   require wsl_ecs
+   require weasel
 
-   [export]
-   def main {
-     // Start a clip on an entity that has an Animator.
-     anim_play(entity, "res://rsc/models/Fox_Walk.anim.ozz")
+   class System : GameSystem {
+       def override update(var ctx : SystemContext; dt : float) : void {
+           var player = ctx.world.find_by_name("Player")
+           if (!ctx.world.is_alive(player)) {
+               return
+           }
+           // Start a clip on an entity that has an Animator.
+           play_animation(ctx.world, player, "res://rsc/models/Fox_Walk.anim.ozz")
 
-     // ...or fade into one over half a second.
-     anim_crossfade(entity, "res://rsc/models/Fox_Run.anim.ozz", 0.5)
+           // ...or fade into one over half a second.
+           crossfade_animation(ctx.world, player, "res://rsc/models/Fox_Run.anim.ozz", 0.5)
 
-     anim_set_speed(entity, 1.5)
-     anim_set_time(entity, 0.0)   // scrub
-     anim_set_loop(entity, true)
-     anim_stop(entity)
+           set_animation_speed(ctx.world, player, 1.5)
+           set_animation_time(ctx.world, player, 0.0)   // scrub
+           set_animation_loop(ctx.world, player, true)
+           if (is_animation_finished(ctx.world, player)) {
+               stop_animation(ctx.world, player)
+           }
+       }
    }
+
+The raw ``anim_*`` natives take a raw entity id and are what the facade
+calls internally; gameplay code should use the ``*_animation`` functions
+above.
 
 GPU skinning
 ------------

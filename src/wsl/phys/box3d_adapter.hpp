@@ -44,6 +44,8 @@ struct body_desc
   vector3 half_extents{ 0.5F, 0.5F, 0.5F };
   float radius = 0.5F;
   float density = 1000.0F;
+  float friction = 0.2F;
+  float restitution = 0.0F;
   bool sensor = false;
 };
 
@@ -100,6 +102,12 @@ public:
   quaternion body_rotation (body_handle body) const;
   void set_body_transform (body_handle body, vector3 position,
                            quaternion rotation);
+  void set_body_surface_properties (body_handle body, float friction,
+                                    float restitution);
+  float body_surface_friction (body_handle body) const;
+  float body_surface_restitution (body_handle body) const;
+  vector3 body_linear_velocity (body_handle body) const;
+  void set_body_linear_velocity (body_handle body, vector3 velocity);
   void add_force (body_handle body, vector3 force);
   void add_impulse (body_handle body, vector3 impulse);
 

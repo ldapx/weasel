@@ -80,6 +80,26 @@ public:
   {
   }
 
+  /**
+   * Fixed-rate lifecycle entry point. Runs zero or more times per frame,
+   * driven by the frame-phase driver before the variable `on_update` pass,
+   * with the physics fixed step. Default is a no-op so existing systems
+   * (including all built-in C++ systems) are unaffected.
+   */
+  virtual void
+  on_fixed_update (entt::registry &, double /*fixed_dt*/)
+  {
+  }
+
+  /**
+   * Late lifecycle entry point. Runs once per frame after the variable
+   * `on_update` pass. Default is a no-op.
+   */
+  virtual void
+  on_late_update (entt::registry &, double /*dt*/)
+  {
+  }
+
   virtual void
   on_render_build_draw_data (entt::registry &)
   {
@@ -200,6 +220,28 @@ public:
 
     if (m_active && (registry != nullptr)) {
       on_update (*registry, dt);
+    }
+  }
+
+  void
+  fixed_update (entt::registry *registry, double fixed_dt)
+  {
+    ZoneScopedN ("sys::fixed_update");
+    ZoneText (m_name.data (), m_name.size ());
+
+    if (m_active && (registry != nullptr)) {
+      on_fixed_update (*registry, fixed_dt);
+    }
+  }
+
+  void
+  late_update (entt::registry *registry, double dt)
+  {
+    ZoneScopedN ("sys::late_update");
+    ZoneText (m_name.data (), m_name.size ());
+
+    if (m_active && (registry != nullptr)) {
+      on_late_update (*registry, dt);
     }
   }
 

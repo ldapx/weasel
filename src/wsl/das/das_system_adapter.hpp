@@ -67,6 +67,8 @@ public:
 
   void on_init (entt::registry &registry) override;
   void on_update (entt::registry &registry, double dt) override;
+  void on_fixed_update (entt::registry &registry, double fixed_dt) override;
+  void on_late_update (entt::registry &registry, double dt) override;
   void on_inactive (entt::registry &registry) override;
 
   void register_event_sources (event::event_hub &hub) override;
@@ -77,6 +79,12 @@ public:
   {
     return m_has_failed;
   }
+
+  /** True when a public Das class method accepts no explicit arguments. */
+  bool has_noarg_method (const char *method_name) const;
+
+  /** Invoke a UI callback method in the owning system's script context. */
+  void invoke_ui_callback (const char *method_name, entt::registry &registry);
 
   const std::string &
   script_path () const

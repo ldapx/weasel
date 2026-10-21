@@ -12,6 +12,7 @@
 #include <agentsdk/mcp/mcp_tool_builder.hpp>
 
 #include <string>
+#include <sstream>
 
 #include <fstream>
 #include <filesystem>
@@ -269,7 +270,8 @@ TEST_CASE ("tool_builder emits input schemas")
 // ============================================================================
 // doc-drift guard: the generated Daslang API ledger
 // (src/wsl/das/das_api_catalog.gen.hpp) must stay in sync with the real
-// registration site (addExtern calls in src/wsl/das/wsl_api_module.cpp).
+// registration site (addExtern calls in src/wsl/das/wsl_api_module.cpp
+// plus src/wsl/das/wsl_event_binds.cpp).
 // ============================================================================
 
 #ifndef WSL_SOURCE_DIR
@@ -278,18 +280,29 @@ TEST_CASE ("tool_builder emits input schemas")
 
 TEST_CASE ("das_api_catalog stays in sync with wsl_api_module registrations")
 {
-  const std::filesystem::path source = std::filesystem::path (WSL_SOURCE_DIR)
-                                       / "src/wsl/das/wsl_api_module.cpp";
+  const std::filesystem::path module_src
+      = std::filesystem::path (WSL_SOURCE_DIR)
+        / "src/wsl/das/wsl_api_module.cpp";
+  const std::filesystem::path binds_src = std::filesystem::path (WSL_SOURCE_DIR)
+                                          / "src/wsl/das/wsl_event_binds.cpp";
   const std::filesystem::path catalog = std::filesystem::path (WSL_SOURCE_DIR)
                                         / "src/wsl/das/das_api_catalog.gen.hpp";
 
-  std::ifstream src (source);
-  REQUIRE_MESSAGE (src.good (), "could not open wsl_api_module.cpp");
+  std::ifstream mod (module_src);
+  REQUIRE_MESSAGE (mod.good (), "could not open wsl_api_module.cpp");
+  std::ifstream ebd (binds_src);
+  REQUIRE_MESSAGE (ebd.good (), "could not open wsl_event_binds.cpp");
   std::ifstream cat (catalog);
   REQUIRE_MESSAGE (cat.good (), "could not open das_api_catalog.gen.hpp");
 
-  std::string src_text ((std::istreambuf_iterator<char> (src)),
+  std::string src_text ((std::istreambuf_iterator<char> (mod)),
                         std::istreambuf_iterator<char> ());
+  {
+    std::string binds_text ((std::istreambuf_iterator<char> (ebd)),
+                            std::istreambuf_iterator<char> ());
+    src_text += "\n";
+    src_text += binds_text;
+  }
   std::string cat_text ((std::istreambuf_iterator<char> (cat)),
                         std::istreambuf_iterator<char> ());
 
@@ -319,5 +332,117 @@ TEST_CASE ("das_api_catalog stays in sync with wsl_api_module registrations")
     INFO ("registered function '" << name
                                   << "' missing from generated catalog");
     CHECK (cataloged.count (name) == 1);
+  }
+}
+
+// ============================================================================
+// doc-drift guard: the gameplay facade reference
+// (doc/source/stdlib/weasel.rst) must cover the public surface of
+// src/wsl/das/modules/weasel.das. Regenerate with
+// src/wsl/das/generate_facade_docs.py after editing the facade.
+// ============================================================================
+
+TEST_CASE ("weasel facade reference covers the public facade surface")
+{
+  const std::filesystem::path facade = std::filesystem::path (WSL_SOURCE_DIR)
+                                       / "src/wsl/das/modules/weasel.das";
+  const std::filesystem::path reference
+      = std::filesystem::path (WSL_SOURCE_DIR) / "doc/source/stdlib/weasel.rst";
+
+  std::ifstream das (facade);
+  REQUIRE_MESSAGE (das.good (), "could not open weasel.das");
+  std::ifstream rst (reference);
+  REQUIRE_MESSAGE (rst.good (), "could not open weasel.rst");
+
+  std::string das_text ((std::istreambuf_iterator<char> (das)),
+                        std::istreambuf_iterator<char> ());
+  std::string rst_text ((std::istreambuf_iterator<char> (rst)),
+                        std::istreambuf_iterator<char> ());
+
+  // Public top-level and member definitions: `def name`, `struct Name`,
+  // `class Name`, `enum Name`, `typedef ... Alias`. Private (`_`-prefixed),
+  // `private` classes, and the query-macro machinery are implementation
+  // details and must not appear here.
+  std::set<std::string> facade_names;
+  {
+    // Match line by line (^ anchors the whole string in ECMAScript).
+    std::istringstream lines (das_text);
+    std::string line;
+    const std::regex def_re (
+        R"PAT(^[ \t]*def[ \t]+(?:override[ \t]+)?([A-Za-z_][\w]*))PAT");
+    const std::regex type_re (
+        R"PAT(^[ \t]*(?:struct|class|enum)[ \t]+([A-Za-z_][\w]*))PAT");
+    const std::regex alias_re (
+        R"PAT(^[ \t]*typedef[ \t]+(?:public[ \t]+)?([A-Za-z_][\w]*))PAT");
+    std::smatch m;
+    int private_depth = 0;
+    auto count_braces = [] (const std::string &s) {
+      int d = 0;
+      bool in_str = false;
+      for (std::size_t k = 0; k < s.size (); ++k) {
+        const char c = s[k];
+        if (in_str) {
+          if (c == '"' && (k == 0 || s[k - 1] != '\\')) {
+            in_str = false;
+          }
+        } else if (c == '"') {
+          in_str = true;
+        } else if (c == '{') {
+          ++d;
+        } else if (c == '}') {
+          --d;
+        }
+      }
+      return d;
+    };
+    while (std::getline (lines, line)) {
+      // `private` declarations and the query-macro class bodies are
+      // implementation details, mirroring generate_facade_docs.py.
+      const std::string code = line.substr (0, line.find ("//"));
+      if (private_depth > 0) {
+        private_depth += count_braces (code);
+        continue;
+      }
+      if (code.find ("private") != std::string::npos) {
+        private_depth += count_braces (code);
+        continue;
+      }
+      if (std::regex_search (code, m, def_re)) {
+        if (!m[1].str ().empty () && m[1].str ()[0] != '_') {
+          facade_names.insert (m[1].str ());
+        }
+      } else if (std::regex_search (code, m, type_re)) {
+        if (!m[1].str ().empty () && m[1].str ()[0] != '_') {
+          facade_names.insert (m[1].str ());
+        }
+      } else if (std::regex_search (code, m, alias_re)) {
+        if (!m[1].str ().empty () && m[1].str ()[0] != '_') {
+          facade_names.insert (m[1].str ());
+        }
+      }
+    }
+  }
+  facade_names.erase ("QueryMacro");
+  facade_names.erase ("QueryExceptMacro");
+  facade_names.erase ("private");
+  REQUIRE_MESSAGE (!facade_names.empty (),
+                   "no public entries found in weasel.das");
+
+  // Documented names: `.. das:function:: name`, `.. das:method:: name`,
+  // `.. das:class:: Name`, `.. das:attribute:: name`, `.. das:data:: Alias`.
+  const std::regex doc_re (
+      R"PAT(\.\.[ \t]+das:(?:function|method|operator|class|attribute|data)::[ \t]+(?:def[ \t]+)?(?:override[ \t]+)?([A-Za-z_][\w]*))PAT");
+  std::set<std::string> documented;
+  for (auto it
+       = std::sregex_iterator (rst_text.begin (), rst_text.end (), doc_re);
+       it != std::sregex_iterator (); ++it) {
+    documented.insert ((*it)[1].str ());
+  }
+  REQUIRE_MESSAGE (!documented.empty (), "no entries found in weasel.rst");
+
+  for (const auto &name : facade_names) {
+    INFO ("facade entry '" << name << "' missing from weasel.rst; "
+                           << "regenerate with generate_facade_docs.py");
+    CHECK (documented.count (name) == 1);
   }
 }

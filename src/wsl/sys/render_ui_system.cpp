@@ -137,6 +137,7 @@ render_ui_system::on_update (entt::registry &registry, double /*unused*/)
     }
 
     if (ui.active_document_instance () != nullptr) {
+      ui.detach_event_listeners ();
       ui.active_document_instance ()->Close ();
       ui.active_document_instance () = nullptr;
     }
@@ -151,6 +152,7 @@ render_ui_system::on_update (entt::registry &registry, double /*unused*/)
         if (ui.active_document_instance () != nullptr) {
           ui.active_document_instance ()->Show ();
           ui.loaded_document_id () = ui.active_document_id ();
+          ui.attach_event_listeners ();
         } else {
           wsl::log::sys ()->error ("Failed to load RML document: {}", resolved);
         }

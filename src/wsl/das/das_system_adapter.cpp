@@ -4,6 +4,7 @@
 #include "wsl_api_module.hpp"
 #include "../log/log.hpp"
 #include "../comp/singl/runtime_context.hpp"
+#include "../comp/singl/ui_manager.hpp"
 
 #include "daScript/daScript.h"
 
@@ -57,9 +58,9 @@ safe_invoke (Context *ctx, const char *method_name,
              const std::string &script_path, Fn &&fn)
 {
   das_error error;
-  if (!run_protected_call (
-          ctx, method_name,
-          std::function<void ()> (std::forward<Fn> (fn)), error)) {
+  if (!run_protected_call (ctx, method_name,
+                           std::function<void ()> (std::forward<Fn> (fn)),
+                           error)) {
     wsl::log::xmake ()->error (
         "das_system_adapter::{} failed in '{}': {} (at {}:{})", method_name,
         script_path, error.message, error.file, error.line);
@@ -104,6 +105,16 @@ das_system_adapter::on_init (entt::registry &registry)
   m_has_failed = false;
   active_registry_guard registry_guard (registry);
   current_adapter_guard adapter_guard (this);
+  // Advance the Daslang fixed-step clock once per completed fixed step.
+  // The hook carries no adapter state, so overwriting it on every init is
+  // safe; without a das system the hook stays empty and no time accrues.
+  if (registry.ctx ().contains<comp::singl::runtime_context *> ()) {
+    if (auto *runtime_ctx
+        = registry.ctx ().get<comp::singl::runtime_context *> ()) {
+      runtime_ctx->set_fixed_step_hook (
+          [] (double fixed_dt) { wsl_api_notify_fixed_step (fixed_dt); });
+    }
+  }
   auto fn = get_on_init (m_class_ptr);
   if (fn) {
     if (!safe_invoke (m_ctx, "on_init", m_script_path,
@@ -139,20 +150,73 @@ das_system_adapter::on_update (entt::registry &registry, double dt)
 }
 
 void
-das_system_adapter::on_inactive (entt::registry &registry)
+das_system_adapter::on_fixed_update (entt::registry &registry, double fixed_dt)
 {
   if (!m_class_ptr || !m_ctx) {
     return;
   }
+  if (m_has_failed) {
+    return;
+  }
   active_registry_guard registry_guard (registry);
   current_adapter_guard adapter_guard (this);
-  if (auto fn = get_on_inactive (m_class_ptr)) {
-    if (!safe_invoke (m_ctx, "on_inactive", m_script_path, [&] () {
-          invoke_on_inactive (m_ctx, fn, m_class_ptr);
+  auto fn = get_on_fixed_update (m_class_ptr);
+  if (fn) {
+    if (!safe_invoke (m_ctx, "on_fixed_update", m_script_path, [&] () {
+          invoke_on_fixed_update (m_ctx, fn, m_class_ptr,
+                                  static_cast<float> (fixed_dt));
         })) {
       m_has_failed = true;
       wsl::log::sys ()->warn ("System '{}' marked as failed, will be skipped",
                               get_name ());
+    }
+  }
+}
+
+void
+das_system_adapter::on_late_update (entt::registry &registry, double dt)
+{
+  if (!m_class_ptr || !m_ctx) {
+    return;
+  }
+  if (m_has_failed) {
+    return;
+  }
+  active_registry_guard registry_guard (registry);
+  current_adapter_guard adapter_guard (this);
+  auto fn = get_on_late_update (m_class_ptr);
+  if (fn) {
+    if (!safe_invoke (m_ctx, "on_late_update", m_script_path, [&] () {
+          invoke_on_late_update (m_ctx, fn, m_class_ptr,
+                                 static_cast<float> (dt));
+        })) {
+      m_has_failed = true;
+      wsl::log::sys ()->warn ("System '{}' marked as failed, will be skipped",
+                              get_name ());
+    }
+  }
+}
+
+void
+das_system_adapter::on_inactive (entt::registry &registry)
+{
+  active_registry_guard registry_guard (registry);
+  current_adapter_guard adapter_guard (this);
+  if (m_class_ptr && m_ctx) {
+    if (auto fn = get_on_inactive (m_class_ptr)) {
+      if (!safe_invoke (m_ctx, "on_inactive", m_script_path, [&] () {
+            invoke_on_inactive (m_ctx, fn, m_class_ptr);
+          })) {
+        m_has_failed = true;
+        wsl::log::sys ()->warn ("System '{}' marked as failed, will be skipped",
+                                get_name ());
+      }
+    }
+  }
+  if (registry.ctx ().contains<comp::singl::runtime_context *> ()) {
+    if (auto *runtime
+        = registry.ctx ().get<comp::singl::runtime_context *> ()) {
+      runtime->ui_manager ().clear_event_listeners_for (this);
     }
   }
 }
@@ -227,9 +291,9 @@ das_system_adapter::add_script_event_sink (entt::id_type event_id,
     }
   }
 
-  m_event_sinks.push_back (
-      { event_id, std::string (event_name), std::string (method_name),
-        event_size, payload_layout_hash });
+  m_event_sinks.push_back ({ event_id, std::string (event_name),
+                             std::string (method_name), event_size,
+                             payload_layout_hash });
 
   auto *rc = try_get_runtime_context ();
   if (rc != nullptr) {
@@ -255,14 +319,24 @@ das_system_adapter::event_handler_payload_signature (
         || std::string_view (method->name) != method_name) {
       continue;
     }
-    if ((method->type != ::das::Type::tBlock
-         && method->type != ::das::Type::tFunction)
-        || method->argCount != 1
-        || method->argTypes == nullptr || method->argTypes[0] == nullptr) {
+    if (method->type != ::das::Type::tBlock
+        && method->type != ::das::Type::tFunction) {
       return false;
     }
-
-    const ::das::TypeInfo *payload = method->argTypes[0];
+    // Class methods carry an implicit `self` first argument, so a handler
+    // with one explicit struct parameter has argCount 2 with the payload at
+    // index 1. A free function with a single struct parameter (argCount 1,
+    // payload at index 0) is also accepted.
+    const ::das::TypeInfo *payload = nullptr;
+    if (method->argCount == 2 && method->argTypes != nullptr
+        && method->argTypes[1] != nullptr) {
+      payload = method->argTypes[1];
+    } else if (method->argCount == 1 && method->argTypes != nullptr
+               && method->argTypes[0] != nullptr) {
+      payload = method->argTypes[0];
+    } else {
+      return false;
+    }
     if (payload->type != ::das::Type::tStructure
         || payload->structType == nullptr || !payload->isRawPod ()
         || payload->size == 0) {
@@ -284,6 +358,64 @@ das_system_adapter::has_method (const char *method_name) const
   }
 
   return ::das::adapt_field_offset (method_name, m_class_info) != 0;
+}
+
+bool
+das_system_adapter::has_noarg_method (const char *method_name) const
+{
+  if (m_class_info == nullptr || m_class_info->fields == nullptr
+      || method_name == nullptr) {
+    return false;
+  }
+  for (std::uint32_t i = 0; i < m_class_info->count; ++i) {
+    const ::das::VarInfo *method = m_class_info->fields[i];
+    if (method != nullptr && method->name != nullptr
+        && std::string_view (method->name) == method_name) {
+      if (method->type != ::das::Type::tBlock
+          && method->type != ::das::Type::tFunction) {
+        return false;
+      }
+      // Class methods carry an implicit `self` first argument, so a method
+      // with no explicit parameters has argCount 1 with a struct self type.
+      // A free function with no arguments at all is also accepted.
+      if (method->argCount == 0) {
+        return true;
+      }
+      return method->argCount == 1 && method->argTypes != nullptr
+             && method->argTypes[0] != nullptr
+             && method->argTypes[0]->type == ::das::Type::tStructure;
+    }
+  }
+  return false;
+}
+
+void
+das_system_adapter::invoke_ui_callback (const char *method_name,
+                                        entt::registry &registry)
+{
+  if (!m_class_ptr || !m_ctx || m_has_failed
+      || !has_noarg_method (method_name)) {
+    return;
+  }
+  const int offset = ::das::adapt_field_offset (method_name, m_class_info);
+  if (offset == 0) {
+    return;
+  }
+  auto fn = getDasClassMethod (m_class_ptr, offset);
+  if (!fn) {
+    return;
+  }
+
+  active_registry_guard registry_guard (registry);
+  current_adapter_guard adapter_guard (this);
+  if (!safe_invoke (m_ctx, method_name, m_script_path, [&] () {
+        ::das::das_invoke_function<void>::invoke<void *> (m_ctx, nullptr, fn,
+                                                          m_class_ptr);
+      })) {
+    m_has_failed = true;
+    wsl::log::sys ()->warn ("System '{}' marked as failed, will be skipped",
+                            get_name ());
+  }
 }
 
 das_system_adapter *
@@ -348,7 +480,6 @@ das_system_adapter::invoke_event_handler (std::size_t index,
     wsl::log::sys ()->warn ("System '{}' marked as failed, will be skipped",
                             get_name ());
   }
-
 }
 
 } // namespace wsl::das
@@ -405,6 +536,15 @@ bool
 das_system_adapter::has_method (const char *) const
 {
   return false;
+}
+bool
+das_system_adapter::has_noarg_method (const char *) const
+{
+  return false;
+}
+void
+das_system_adapter::invoke_ui_callback (const char *, entt::registry &)
+{
 }
 das_system_adapter *
 das_system_adapter::current ()
